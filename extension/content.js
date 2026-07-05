@@ -109,20 +109,22 @@
     renderSegments();
   }
 
-  // ---------- context chip (fetched when the panel opens) ---------------------
-  async function loadContext() {
+  // ---------- context chip (via the background worker) ------------------------
+  // The content script can't hit localhost directly (Chrome blocks the loopback
+  // address space); the background service worker makes the bridge calls.
+  function loadContext() {
     ctxEl.textContent = "loading context…";
-    try {
-      const r = await fetch(`${BRIDGE}/api/context?pr=${encodeURIComponent(prUrl)}`);
-      const c = await r.json();
-      if (c.error) throw new Error(c.error);
+    chrome.runtime.sendMessage({ type: "context", prUrl }, (res) => {
+      if (!res || !res.ok || res.json?.error) {
+        ctxEl.innerHTML = `<span class="vp-warn">bridge not reachable — is the voice-pr server running on ${BRIDGE}?</span>`;
+        return;
+      }
+      const c = res.json;
       const bits = [`PR #${c.pr.number}`, c.pr.branch];
       if (c.jiraKey) bits.push(`🎫 ${c.jiraKey}`);
       if (c.checksSummary) bits.push(`✔︎ ${c.checksSummary}`);
       ctxEl.textContent = bits.join("  ·  ");
-    } catch (e) {
-      ctxEl.innerHTML = `<span class="vp-warn">bridge not reachable at ${BRIDGE} — is the voice-pr server running?</span>`;
-    }
+    });
   }
 
   // ---------- speech ----------------------------------------------------------
@@ -180,12 +182,12 @@
     statusEl.innerHTML = `<div class="vp-line">handing ${segments.length} comment(s) to the orchestrator…</div>
       <div class="vp-reassure">You can close this tab — the PR updates in a few minutes.</div>`;
     try {
-      const res = await fetch(`${BRIDGE}/api/session`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prRef: prUrl, segments }),
+      const port = chrome.runtime.connect({ name: "session" });
+      port.onMessage.addListener((ev) => {
+        if (ev.stage === "_end") return port.disconnect();
+        onEvent(ev);
       });
-      await readStream(res.body, onEvent);
+      port.postMessage({ prRef: prUrl, segments });
     } catch (e) {
       line(`error: ${e.message}`, true);
     }
@@ -238,22 +240,6 @@
     d.textContent = text;
     statusEl.appendChild(d);
     statusEl.scrollTop = statusEl.scrollHeight;
-  }
-  async function readStream(stream, cb) {
-    const reader = stream.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const l = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (l) cb(JSON.parse(l));
-      }
-    }
   }
   function escapeHtml(s) {
     return (s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));

@@ -25,6 +25,14 @@ There are **two front-ends** over the same bridge + orchestrator:
 1. **Chrome extension** (`extension/`) — the real UX, on the GitHub PR page. *Start here.*
 2. **Localhost page** (`public/`) — a paste-a-URL fallback for quick tests / no-extension use.
 
+The extension is a content script (`content.js`, the PR-page UI + viewport
+anchoring) plus a **background service worker** (`background.js`) that makes the
+bridge calls. That split is load-bearing: Chrome blocks a content script from
+fetching the `localhost` loopback directly, so all bridge traffic goes through
+the worker (extension context, covered by `host_permissions`). Verified live in
+Chrome — injection, viewport anchoring on GitHub's real diff DOM, the context
+call, and session streaming all exercised end-to-end.
+
 ## The design (decided in a grill-me session)
 
 | Decision | Choice |

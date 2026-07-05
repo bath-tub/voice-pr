@@ -22,6 +22,9 @@ function cors(res) {
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
   res.setHeader("access-control-allow-headers", "content-type");
+  // Chrome Private Network Access: an https page (github.com) fetching this
+  // localhost bridge needs the server to opt in, or the preflight is blocked.
+  res.setHeader("access-control-allow-private-network", "true");
 }
 
 const server = createServer(async (req, res) => {

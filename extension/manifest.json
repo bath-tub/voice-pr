@@ -3,6 +3,7 @@
   "name": "voice-pr",
   "version": "0.1.0",
   "description": "Scroll your PR diff and talk. Your comments are anchored to what you're looking at, enriched with ticket/Slack/CI context, and handed to your orchestrator to do the work.",
+  "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
       "matches": ["https://github.com/*/*/pull/*"],
