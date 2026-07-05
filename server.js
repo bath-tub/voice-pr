@@ -64,7 +64,9 @@ async function handleBatch(req, res) {
     const result = await runBatch({ prRef, transcript }, send);
     send("result", result);
     console.log(
-      `[batch] done: ${result.committed.length} committed, ${result.needsClarification.length} unclear`
+      result.backend === "orchestrator"
+        ? `[batch] orchestrator: work item ${result.workItemId} -> ${result.status}`
+        : `[batch] done: ${result.committed.length} committed, ${result.needsClarification.length} unclear`
     );
   } catch (e) {
     console.error(`[batch] error: ${e.message}`);

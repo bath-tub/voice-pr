@@ -55,6 +55,19 @@ git checkout -q main 2>/dev/null || true
 git pull -q origin main 2>/dev/null || true
 git checkout -q -b "$BRANCH"
 
+# --- refinery quality gates (so the orchestrator backend can merge) ---------
+cat > build.sh <<'EOF'
+#!/bin/sh
+# no build step for this demo
+exit 0
+EOF
+cat > test.sh <<'EOF'
+#!/bin/sh
+set -e
+npm test
+EOF
+chmod +x build.sh test.sh
+
 # --- the PR's feature code: deliberately rough ------------------------------
 mkdir -p src
 cat > src/charge.js <<'EOF'

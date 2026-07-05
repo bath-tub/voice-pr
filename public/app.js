@@ -151,6 +151,13 @@ const STAGE_TEXT = {
   pushing: (d) => `pushing commits to ${d.branch}…`,
   commenting: (d) => `commenting on ${d.file}:${d.line}…`,
   clarifying: (d) => `noting ${d.count} unclear item(s) for you…`,
+  // orchestrator backend
+  "project-ready": (d) => `repo registered with the orchestrator (${d.path})`,
+  "work-filed": (d) => `filed work item ${d.id} into the orchestrator`,
+  dispatching: (d) => `nudging the mayor to dispatch work item ${d.id}…`,
+  "work-status": (d) => `work item ${d.id}: ${d.status}`,
+  "re-nudged": (d) => `mayor was slow — re-nudged for ${d.id}`,
+  refinery: (d) => `refinery: ${d.status}`,
 };
 
 function handleEvent(ev) {
@@ -183,11 +190,12 @@ function appendLog(text, cls = "") {
 
 function renderResult(r) {
   spinner.classList.add("stopped");
-  setStatus(`done in a couple minutes — ${r.summary || "handled your feedback"}`);
-
   const esc = (s) =>
     (s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
+  if (r.backend === "orchestrator") return renderOrchestratorResult(r, esc);
+
+  setStatus(`done in a couple minutes — ${r.summary || "handled your feedback"}`);
   let html = `<h2>✅ Ready to review</h2>`;
   html += `<p class="summary"><a href="${r.pr.url}" target="_blank">${esc(
     r.pr.title
@@ -222,6 +230,36 @@ function renderResult(r) {
   }
 
   resultEl.innerHTML = html;
+  resultEl.hidden = false;
+}
+
+function renderOrchestratorResult(r, esc) {
+  const ok = r.status === "done";
+  const icon = ok ? "✅" : r.status === "failed" ? "⚠️" : "⏳";
+  setStatus(`${r.summary}`, r.status === "failed");
+  const refLine = r.refinery
+    ? `refinery: <code>${esc(r.refinery.status)}</code>${
+        r.refinery.branch ? ` (${esc(r.refinery.branch)})` : ""
+      }`
+    : "no refinery record";
+  resultEl.innerHTML = `
+    <h2>${icon} Orchestrator: ${esc(r.status)}</h2>
+    <p class="summary"><a href="${r.pr.url}" target="_blank">${esc(
+      r.pr.title
+    )}</a> — merged onto <code>${esc(r.pr.branch)}</code></p>
+    <ul>
+      <li class="card ${ok ? "done" : "unclear"}">
+        <div class="title">Work item <code>${esc(r.workItemId)}</code></div>
+        <div class="meta">${refLine}</div>
+        <div class="rationale">${esc(r.summary)}</div>
+      </li>
+    </ul>
+    ${
+      r.trailCommentUrl
+        ? `<p class="summary" style="margin-top:10px"><a href="${r.trailCommentUrl}" target="_blank">See the intent-trail comment on the PR →</a></p>`
+        : ""
+    }
+    <p class="summary" style="margin-top:10px">Ran through the containerized pogo loop (mayor → polecat → refinery). Open the PR to see the merged commits.</p>`;
   resultEl.hidden = false;
 }
 

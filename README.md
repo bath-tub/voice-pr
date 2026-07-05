@@ -80,13 +80,60 @@ item so you can see the clarification path). Nothing real is touched.
 5. **`lib/github.js`** — PR parsing + `gh` operations. Inline review comments
    fall back to a plain PR comment if a line isn't part of the diff hunk.
 
+## Two backends
+
+voice-pr can execute a batch in one of two ways, selected by `VOICE_PR_BACKEND`:
+
+### `direct` (default)
+Runs `claude -p` in an isolated clone on the host, commits per item, pushes,
+and posts the anchored comments itself. Self-contained; nothing else required.
+
+### `orchestrator` — ports voice-pr into the containerized pogo loop
+Instead of running the agent itself, voice-pr becomes a **producer of work
+items** for a locally running pogo orchestrator container (mayor → polecat →
+refinery). The adapter (`lib/orchestrator.js`, transport = `docker exec`):
+
+1. **Clones** the PR's repo into the container workspace on the head branch and
+   registers it (`pogo project add`).
+2. **Files a work item** — `mg new --repo <container-path> --branch <PR-head>
+   --assignee mayor --tag source=voice-pr`. Setting `--branch` to the PR head is
+   the key: the refinery's merge `--target` becomes the PR branch, so the
+   polecat's commits land **on the PR**.
+3. **Nudges the mayor** to run a coordination cycle now (`pogo nudge mayor`).
+4. **Tracks** the item (`mg show`, `pogo refinery history`) through
+   claim → commit → refinery gates → fast-forward merge, emitting the same
+   progress-event shape the UI already renders.
+
+The work-item body (`buildOrchestratorBody`) carries the voice-pr conventions
+into the polecat: segment the transcript, confidence-gate, one commit per
+confident item, and — after merge — post the anchored intent-trail comments and
+a clarification comment for anything too vague. The polecat template already
+owns the claim / commit / `refinery submit` / done protocol.
+
+```bash
+VOICE_PR_BACKEND=orchestrator PORT=4100 node server.js
+```
+
+**Orchestrator credential note (operational):** the pogo container's Claude auth
+is wired in at `docker run` time (an OAuth token copied into a bind-mounted
+file, or `ANTHROPIC_API_KEY`). OAuth tokens expire — if the mayor/polecats log
+`API Error: 401 Invalid authentication credentials`, refresh the mounted file
+(`security find-generic-password -s "Claude Code-credentials" -w >
+~/.codingagent/secrets/claude-credentials.json`) and restart the mayor
+(`pogo agent stop mayor`; pogod respawns it). Injecting a real
+`ANTHROPIC_API_KEY` avoids the expiry entirely.
+
 ## Config
 
 | Env | Default | Meaning |
 |---|---|---|
 | `PORT` | `4100` | HTTP port |
-| `VOICE_PR_MODEL` | `claude-sonnet-5` | model for the headless agent |
-| `VOICE_PR_TIMEOUT_MS` | `360000` | agent timeout per batch |
+| `VOICE_PR_BACKEND` | `direct` | `direct` (host `claude -p`) or `orchestrator` (pogo loop) |
+| `VOICE_PR_MODEL` | `claude-sonnet-5` | model for the headless agent (direct backend) |
+| `VOICE_PR_TIMEOUT_MS` | `360000` | agent timeout per batch (direct backend) |
+| `VOICE_PR_CONTAINER` | `codingagent` | orchestrator container name |
+| `VOICE_PR_WORKSPACE` | `/home/pogo/workspace` | repo checkout root inside the container |
+| `VOICE_PR_DISPATCH_MS` | `720000` | how long to track a work item before returning |
 
 ## Known MVP limits (next passes)
 
