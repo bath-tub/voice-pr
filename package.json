@@ -1,0 +1,18 @@
+{
+  "name": "voice-pr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Speak feedback at your own GitHub PR; an agent transcribes it, makes the confident changes in an isolated worktree, pushes commits, and posts anchored intent-trail comments. Ready to review in a few minutes.",
+  "type": "module",
+  "bin": {
+    "voice-pr": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "demo": "bash scripts/setup-demo-pr.sh"
+  },
+  "dependencies": {},
+  "engines": {
+    "node": ">=20"
+  }
+}
