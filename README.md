@@ -1,27 +1,29 @@
 # voice-pr
 
-Speak your feedback at your own GitHub PR. Walk away. Come back to commits.
+**Scroll your PR diff in Chrome and talk. Walk away. Come back to commits.**
 
-You're reviewing your own pull request on GitHub, you notice a few things, and
-instead of context-switching into your editor to fix them, you just **say them
-out loud**. A few minutes later the PR has real commits addressing each clear
-point, each pinned with a comment explaining *why* that line changed — and a
-single comment listing anything you were too vague about.
+You're on your PR's *Files changed* tab. You hit record, scroll through the
+diff, and just say what you think — "this retry needs backoff… rename this
+var… why are we fetching twice here." Each comment is **anchored to the file+line
+you were looking at when you said it**, enriched with the ticket / Slack / CI
+context, batched into one task, and handed to your **orchestrator** to do the
+work. Minutes later the PR has real commits.
 
 ```
-  you (on the PR):  "make the retry loop back off exponentially,
-                     rename fooSvc to paymentClient, and add a null
-                     check for amount. also that widget thing, make it nicer."
-        │
-        ▼  transcribe (browser) → segment → confidence-gate
-  ┌─────────────────────────────────────────────────────────────┐
-  │  confident items          →  edit in isolated worktree,      │
-  │   (backoff, rename, guard)   one commit each, push,          │
-  │                              anchored intent-trail comment   │
-  │  unclear item ("widget")  →  one "your direction wasn't      │
-  │                              clear enough" PR comment        │
-  └─────────────────────────────────────────────────────────────┘
+  Chrome extension on the PR page
+    ● record → scroll + talk → each chunk anchored to the viewport's file:line
+        │  (+ auto-pull: Jira ticket, Slack threads, CI status)
+        ▼  POST /api/session
+  local bridge (this Node server)  ──►  pogo orchestrator
+        │                                 mayor → polecat (worktree) → refinery
+        │                                 └─ commits merged onto the PR branch
+        ▼
+  bridge posts the intent-trail comment on the PR after the merge
 ```
+
+There are **two front-ends** over the same bridge + orchestrator:
+1. **Chrome extension** (`extension/`) — the real UX, on the GitHub PR page. *Start here.*
+2. **Localhost page** (`public/`) — a paste-a-URL fallback for quick tests / no-extension use.
 
 ## The design (decided in a grill-me session)
 
@@ -32,16 +34,43 @@ single comment listing anything you were too vague about.
 | **What comments are for** | An **anchored intent trail**: each committed change gets a comment pinned to the line, explaining why it changed and linking the commit. They stay as a record. |
 | **Confident items** | Real edits, **one commit per item**, pushed to the branch. |
 | **Unclear items** | **Not acted on.** Batched into one comment saying your direction wasn't clear enough — so a wrong guess never lands silently. |
-| **Activation** | **Explicit** — hold `Space` / click to talk. No always-on mic. |
-| **Execution** | **Isolated clone/worktree** off branch HEAD (co-author model); the agent is `claude` headless. Never force-pushes, rebases, or amends. |
-| **Safety net** | Everything lands as **commits you review before merge**; unclear work is surfaced, not guessed. |
+| **Activation** | **Explicit** — click record in the extension, then scroll + talk. No always-on mic. |
+| **Anchoring** | **Auto from viewport** — each spoken chunk pins to the `file:line` centered on screen when you said it. Say "over in utils…" and the agent follows meaning over the anchor. |
+| **Context** | On session start the bridge detects the **Jira key** + **CI status**; the polecat pulls the **ticket** and **Slack** threads via its MCP tools at work-time. |
+| **Execution** | Via the **orchestrator** (mayor → polecat in a worktree → refinery merge onto the PR branch). Localhost fallback uses `claude` headless in an isolated clone. Never force-pushes, rebases, or amends. |
+| **Safety net** | Everything lands as **commits you review before merge**; unclear work is surfaced as a comment, not guessed. |
+
+## Quick start (Chrome extension)
+
+```bash
+# 1. Start the bridge (talks to gh + your orchestrator container)
+node server.js                      # → http://localhost:4100
+```
+
+2. Load the extension **once**: open `chrome://extensions`, turn on
+   **Developer mode**, click **Load unpacked**, and pick the `extension/`
+   folder. (Chrome won't let anything auto-install a local extension — this one
+   manual step is unavoidable.)
+3. Open any PR's **Files changed** tab on GitHub. A **🎙️ Review with voice**
+   pill appears bottom-right.
+4. Click it → **Start recording** → scroll and talk. Each comment shows the
+   `file:line` it anchored to. (First time, Chrome asks for mic permission on
+   github.com. No mic / not Chrome? Type comments into the box instead — same
+   result.)
+5. **Hand to orchestrator →**. Close the tab if you want; the PR updates in a
+   few minutes. The panel also streams live progress and links the result.
+
+The extension always routes through the **orchestrator** backend, so the bridge
+must be able to reach your pogo container (see below).
 
 ## Requirements
 
-- **Node ≥ 20** (uses only built-ins — no `npm install`).
-- **`claude` CLI**, authenticated (it's the code-editing agent, run headless).
+- **Node ≥ 20** (bridge uses only built-ins — no `npm install`).
 - **`gh` CLI**, authenticated with push access to the target repo.
-- **Chrome** for the browser mic (Web Speech API). Other browsers: type instead.
+- A running **pogo orchestrator container** (`codingagent`) for the extension
+  path — see "orchestrator backend" below. (The localhost `direct` fallback
+  instead needs the **`claude` CLI** authenticated.)
+- **Chrome** for the extension + mic (Web Speech API).
 
 ## Run
 
@@ -148,3 +177,11 @@ file, or `ANTHROPIC_API_KEY`). OAuth tokens expire — if the mayor/polecats log
   path (e.g. Whisper) would make it browser-agnostic.
 - **One commit per item** assumes items are independent; overlapping edits to the
   same lines aren't ordered.
+- **Extension anchoring targets GitHub's current diff DOM** — if the mic is
+  blocked by a page `Permissions-Policy` or GitHub restructures the diff markup,
+  anchoring degrades to file-only or no anchor (the agent then infers location
+  from the words + context). The typed-comment box always works as a fallback.
+- **Context depth is delegated** — the bridge only detects the Jira key + CI
+  cheaply; the actual ticket/Slack reads happen inside the polecat via MCP, so
+  they only enrich the work, not the live UI. A richer live "context found"
+  panel would need the bridge itself to hold those integrations.

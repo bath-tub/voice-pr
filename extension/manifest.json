@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "voice-pr",
+  "version": "0.1.0",
+  "description": "Scroll your PR diff and talk. Your comments are anchored to what you're looking at, enriched with ticket/Slack/CI context, and handed to your orchestrator to do the work.",
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*/*/pull/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["http://localhost:4100/*"]
+}

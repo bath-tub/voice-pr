@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
-import { runBatch } from "./lib/pipeline.js";
+import { runBatch, runSession, getContext } from "./lib/pipeline.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, "public");
@@ -16,10 +16,25 @@ const MIME = {
   ".css": "text/css; charset=utf-8",
 };
 
+// The Chrome extension calls these endpoints from the github.com origin, so
+// every response is CORS-open and preflights are answered.
+function cors(res) {
+  res.setHeader("access-control-allow-origin", "*");
+  res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+  res.setHeader("access-control-allow-headers", "content-type");
+}
+
 const server = createServer(async (req, res) => {
   try {
-    if (req.method === "POST" && req.url === "/api/batch")
-      return await handleBatch(req, res);
+    cors(res);
+    const url = new URL(req.url, "http://localhost");
+    if (req.method === "OPTIONS") return res.writeHead(204).end();
+    if (req.method === "GET" && url.pathname === "/api/context")
+      return await handleContext(url, res);
+    if (req.method === "POST" && url.pathname === "/api/session")
+      return await handleStream(req, res, (input, send) => runSession(input, send));
+    if (req.method === "POST" && url.pathname === "/api/batch")
+      return await handleStream(req, res, (input, send) => runBatch(input, send));
     if (req.method === "GET") return await serveStatic(req, res);
     res.writeHead(405).end("method not allowed");
   } catch (e) {
@@ -27,6 +42,18 @@ const server = createServer(async (req, res) => {
     res.end(`error: ${e.message}`);
   }
 });
+
+async function handleContext(url, res) {
+  const prRef = url.searchParams.get("pr");
+  try {
+    const ctx = await getContext(prRef);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(ctx));
+  } catch (e) {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: e.message }));
+  }
+}
 
 async function serveStatic(req, res) {
   const rel = req.url === "/" ? "/index.html" : req.url.split("?")[0];
@@ -41,35 +68,35 @@ async function serveStatic(req, res) {
   }
 }
 
-async function handleBatch(req, res) {
+async function handleStream(req, res, runner) {
   const body = await readBody(req);
-  const { prRef, transcript } = JSON.parse(body || "{}");
+  const input = JSON.parse(body || "{}");
 
-  // Stream progress as newline-delimited JSON so the browser can render it live.
+  // Stream progress as newline-delimited JSON so the client can render it live.
   res.writeHead(200, {
     "content-type": "application/x-ndjson",
     "cache-control": "no-cache",
     "x-accel-buffering": "no",
   });
-  const send = (stage, detail) =>
-    res.write(JSON.stringify({ stage, detail, t: elapsed() }) + "\n");
-
   const t0 = Date.now();
-  function elapsed() {
-    return Math.round((Date.now() - t0) / 1000);
-  }
+  const send = (stage, detail) =>
+    res.write(
+      JSON.stringify({ stage, detail, t: Math.round((Date.now() - t0) / 1000) }) + "\n"
+    );
 
   try {
-    console.log(`[batch] PR=${prRef} transcript="${(transcript || "").slice(0, 80)}..."`);
-    const result = await runBatch({ prRef, transcript }, send);
+    console.log(
+      `[req] PR=${input.prRef} ${input.segments ? `${input.segments.length} segments` : "transcript"}`
+    );
+    const result = await runner(input, send);
     send("result", result);
     console.log(
       result.backend === "orchestrator"
-        ? `[batch] orchestrator: work item ${result.workItemId} -> ${result.status}`
-        : `[batch] done: ${result.committed.length} committed, ${result.needsClarification.length} unclear`
+        ? `[req] orchestrator: work item ${result.workItemId} -> ${result.status}`
+        : `[req] done: ${result.committed.length} committed`
     );
   } catch (e) {
-    console.error(`[batch] error: ${e.message}`);
+    console.error(`[req] error: ${e.message}`);
     send("error", { message: e.message });
   } finally {
     res.end();
