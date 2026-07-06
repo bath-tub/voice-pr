@@ -193,6 +193,9 @@ file, or `ANTHROPIC_API_KEY`). OAuth tokens expire — if the mayor/polecats log
 | `VOICE_PR_DISPATCH_MS` | `720000` | how long to track a work item before returning |
 | `VOICE_PR_WHISPER_BIN` | `whisper-cli` | whisper.cpp binary |
 | `VOICE_PR_WHISPER_MODEL` | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin` | GGML model path |
+| `VOICE_PR_WHISPER_NO_SPEECH_THOLD` | unset | optional `whisper-cli --no-speech-thold` value for silence handling |
+| `VOICE_PR_WHISPER_MAX_NO_SPEECH_PROB` | unset | optional post-filter for JSON segments with high no-speech probability |
+| `VOICE_PR_WHISPER_ARGS` | unset | extra `whisper-cli` args, e.g. `--vad --vad-model /path/to/model.bin` |
 | `VOICE_PR_ARCHIVE_DIR` | `~/.voice-pr/sessions` | where session fixtures are saved |
 
 ## Session archive (fixtures)
