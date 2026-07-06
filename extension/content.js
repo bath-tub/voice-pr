@@ -30,20 +30,54 @@
     debugLine(a, src);
   }
 
-  // ---------- viewport anchoring ----------------------------------------------
-  // Resolve which file the given node lives in (GitHub diff DOM).
-  function fileOf(el) {
-    const f = el && el.closest?.("[data-tagsearch-path], .file, .js-file");
-    if (!f) return null;
-    return (
-      f.getAttribute?.("data-tagsearch-path") ||
-      f.querySelector?.(".file-header")?.getAttribute("data-path") ||
-      f.querySelector?.("[data-path]")?.getAttribute("data-path") ||
-      null
-    );
+  // ---------- diff anchoring (view-agnostic) ----------------------------------
+  // GitHub tags each diff line with a deep-link id: diff-<filehash>(L|R)<line>
+  // (the same scheme in your URL bar), and the file sidebar maps #diff-<hash> to
+  // the path. This works on BOTH the classic /files view and the new React
+  // /changes view, so we anchor off it and fall back to classic DOM selectors.
+  function fileMap() {
+    const map = {};
+    document.querySelectorAll('a[href^="#diff-"]').forEach((a) => {
+      const m = (a.getAttribute("href") || "").match(/^#diff-([0-9a-f]+)$/);
+      const path = (a.textContent || "").trim();
+      if (m && path && !map[m[1]]) map[m[1]] = path;
+    });
+    return map;
   }
-  // The new-file line number for a DOM node's diff row (right side of the diff).
+  // Nearest diff-line deep-link id to a node → { hash, side, line } (line may be
+  // null if only the file container id is found).
+  function diffAnchor(el) {
+    let node = el && (el.nodeType === 3 ? el.parentElement : el);
+    if (!node) return null;
+    let hash = null;
+    const LINE = /^diff-([0-9a-f]+)([LR])(\d+)$/;
+    for (let n = node, d = 0; n && n !== document.body && d < 8; n = n.parentElement, d++) {
+      let m = (n.id || "").match(LINE);
+      if (m) return { hash: m[1], side: m[2], line: +m[3] };
+      const fm = (n.id || "").match(/^diff-([0-9a-f]+)$/);
+      if (fm && !hash) hash = fm[1];
+      const row = n.closest?.("tr");
+      if (row) {
+        const hit = [...row.querySelectorAll("[id]")].find((x) => LINE.test(x.id));
+        if (hit) { const mm = hit.id.match(LINE); return { hash: mm[1], side: mm[2], line: +mm[3] }; }
+      }
+    }
+    return hash ? { hash, side: null, line: null } : null;
+  }
+  function fileOf(el) {
+    const a = diffAnchor(el);
+    if (a) { const p = fileMap()[a.hash]; if (p) return p; }
+    const f = el && el.closest?.("[data-tagsearch-path], .file, .js-file");
+    return f
+      ? f.getAttribute?.("data-tagsearch-path") ||
+          f.querySelector?.(".file-header")?.getAttribute("data-path") ||
+          f.querySelector?.("[data-path]")?.getAttribute("data-path") ||
+          null
+      : null;
+  }
   function lineOf(el) {
+    const a = diffAnchor(el);
+    if (a && a.line != null) return a.line;
     const row = el && (el.nodeType === 3 ? el.parentElement : el)?.closest?.("tr");
     if (!row) return null;
     const nums = [...row.querySelectorAll("td.blob-num[data-line-number]")];
