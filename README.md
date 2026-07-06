@@ -173,12 +173,14 @@ VOICE_PR_BACKEND=orchestrator PORT=4100 node server.js
 
 **Orchestrator credential note (operational):** the pogo container's Claude auth
 is wired in at `docker run` time (an OAuth token copied into a bind-mounted
-file, or `ANTHROPIC_API_KEY`). OAuth tokens expire — if the mayor/polecats log
-`API Error: 401 Invalid authentication credentials`, refresh the mounted file
-(`security find-generic-password -s "Claude Code-credentials" -w >
-~/.codingagent/secrets/claude-credentials.json`) and restart the mayor
-(`pogo agent stop mayor`; pogod respawns it). Injecting a real
-`ANTHROPIC_API_KEY` avoids the expiry entirely.
+file, or `ANTHROPIC_API_KEY`). Before each orchestrator dispatch, voice-pr now
+refreshes the mounted OAuth file from the local Claude Code keychain service
+(`Claude Code-credentials`) and restarts the mayor so it re-reads the token:
+`security find-generic-password -s "Claude Code-credentials" -w >
+~/.codingagent/secrets/claude-credentials.json`, then `pogo agent stop mayor`.
+If the container has `ANTHROPIC_API_KEY`, the refresh is skipped because API-key
+auth avoids OAuth expiry. If the keychain lookup fails, the request fails before
+filing work instead of leaving a queued item to stall on 401s.
 
 ## Config
 
@@ -191,6 +193,9 @@ file, or `ANTHROPIC_API_KEY`). OAuth tokens expire — if the mayor/polecats log
 | `VOICE_PR_CONTAINER` | `codingagent` | orchestrator container name |
 | `VOICE_PR_WORKSPACE` | `/home/pogo/workspace` | repo checkout root inside the container |
 | `VOICE_PR_DISPATCH_MS` | `720000` | how long to track a work item before returning |
+| `VOICE_PR_CLAUDE_AUTH_REFRESH` | `auto` | `auto`, `always`, or `never`; controls the orchestrator OAuth refresh preflight |
+| `VOICE_PR_CLAUDE_AUTH_SERVICE` | `Claude Code-credentials` | macOS keychain service to read for OAuth credentials |
+| `VOICE_PR_CLAUDE_AUTH_FILE` | `~/.codingagent/secrets/claude-credentials.json` | host path for the bind-mounted Claude credential file |
 | `VOICE_PR_WHISPER_BIN` | `whisper-cli` | whisper.cpp binary |
 | `VOICE_PR_WHISPER_MODEL` | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin` | GGML model path |
 | `VOICE_PR_ARCHIVE_DIR` | `~/.voice-pr/sessions` | where session fixtures are saved |
