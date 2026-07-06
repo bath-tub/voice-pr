@@ -48,7 +48,20 @@
   border-bottom: 1px solid var(--vp-border);
 }
 .vp-title { font-weight: 700; }
+.vp-head-right { display: inline-flex; align-items: center; gap: 8px; }
+.vp-dbg {
+  background: none; border: 1px solid var(--vp-border); color: var(--vp-muted);
+  border-radius: 6px; padding: 2px 7px; font: inherit; font-size: 11px; cursor: pointer;
+}
+.vp-dbg.on { border-color: var(--vp-accent); color: var(--vp-accent); }
 .vp-x { background: none; border: 0; color: var(--vp-muted); cursor: pointer; font-size: 14px; }
+.vp-debug {
+  margin: 0 12px 6px; padding: 6px 8px; max-height: 130px; overflow-y: auto;
+  background: var(--vp-bg); border: 1px solid var(--vp-border); border-radius: 8px;
+  font: 11px ui-monospace, Menlo, monospace;
+}
+.vp-dbgrow { color: var(--vp-muted); padding: 1px 0; }
+.vp-dbgrow:first-child { color: var(--vp-accent); } /* newest */
 .vp-context {
   padding: 8px 12px;
   color: var(--vp-muted);

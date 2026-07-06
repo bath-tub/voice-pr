@@ -23,9 +23,11 @@
     dispatched = false,
     stopResolve = null,
     activePort = null;
-  function pushTimeline() {
+  function pushTimeline(src = "scroll") {
     if (!recording) return;
-    timeline.push({ t: Date.now() - recStart, ...anchorNow() });
+    const a = anchorNow();
+    timeline.push({ t: Date.now() - recStart, src, ...a });
+    debugLine(a, src);
   }
 
   // ---------- viewport anchoring ----------------------------------------------
@@ -74,13 +76,13 @@
   document.addEventListener("mouseup", () => {
     const s = selAnchor();
     if (s) lastSel = { ...s, ts: Date.now() };
-    pushTimeline();
+    pushTimeline(s ? "select" : "click");
   });
   document.addEventListener("mousedown", (e) => {
     const file = fileOf(e.target),
       line = lineOf(e.target);
     if (file && line != null) lastClick = { file, line, ts: Date.now() };
-    pushTimeline();
+    pushTimeline("click");
   });
 
   // Viewport-center fallback (what's on screen if you didn't select/click).
@@ -125,14 +127,14 @@
     <div id="vp-panel" class="vp-panel" hidden>
       <div class="vp-head">
         <span class="vp-title">🎙️ voice-pr</span>
-        <button id="vp-close" class="vp-x">✕</button>
+        <span class="vp-head-right">
+          <button id="vp-debug-btn" class="vp-dbg" title="show what's being captured as you talk">🐛 debug</button>
+          <button id="vp-close" class="vp-x">✕</button>
+        </span>
       </div>
       <div id="vp-context" class="vp-context">PR #${m[3]}</div>
       <div id="vp-looking" class="vp-looking"></div>
-      <ol id="vp-segments" class="vp-segments"></ol>
-      <div class="vp-add">
-        <input id="vp-type" type="text" placeholder="…or type a comment (uses what you're looking at)" />
-      </div>
+      <div id="vp-debug" class="vp-debug" hidden></div>
       <div class="vp-actions">
         <button id="vp-toggle" class="vp-rec">● Record</button>
         <button id="vp-send" class="vp-send" disabled>Dispatch →</button>
@@ -146,8 +148,8 @@
     panel = $("#vp-panel"),
     ctxEl = $("#vp-context"),
     lookingEl = $("#vp-looking"),
-    segEl = $("#vp-segments"),
-    typeEl = $("#vp-type"),
+    debugEl = $("#vp-debug"),
+    debugBtn = $("#vp-debug-btn"),
     toggleBtn = $("#vp-toggle"),
     sendBtn = $("#vp-send"),
     statusEl = $("#vp-status");
@@ -173,11 +175,10 @@
     lastClick = null;
   }
   function resetUI() {
-    segEl.innerHTML = "";
     statusEl.hidden = true;
     statusEl.innerHTML = "";
     lookingEl.textContent = "";
-    typeEl.value = "";
+    debugEl.innerHTML = "";
     ctxEl.textContent = `PR #${m[3]}`;
     sendBtn.disabled = false;
     sendBtn.textContent = "Dispatch →";
@@ -202,23 +203,27 @@
     pill.hidden = false;
   });
 
-  function renderSegments() {
-    segEl.innerHTML = segments
-      .map(
-        (s) =>
-          `<li><span class="vp-loc">${escapeHtml(fmtAnchor(s))}</span>${
-            s.snippet ? `<code class="vp-snip">${escapeHtml(s.snippet.slice(0, 90))}</code>` : ""
-          }${escapeHtml(s.text)}</li>`
-      )
-      .join("");
-    segEl.scrollTop = segEl.scrollHeight;
+  // ---------- debug: show what's being captured as you talk -------------------
+  let debugOn = localStorage.getItem("voicepr:debug") === "1";
+  function applyDebug() {
+    debugEl.hidden = !debugOn;
+    debugBtn.classList.toggle("on", debugOn);
   }
-  function addSegment(text) {
-    text = text.trim();
-    if (!text) return;
-    segments.push({ text, ...anchorNow() });
-    renderSegments();
+  function debugLine(a, src) {
+    if (!debugOn) return;
+    const secs = Math.floor((Date.now() - recStart) / 1000);
+    const row = document.createElement("div");
+    row.className = "vp-dbgrow";
+    row.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} · ${src} · ${fmtAnchor(a)}`;
+    debugEl.prepend(row);
+    while (debugEl.childElementCount > 40) debugEl.lastElementChild.remove();
   }
+  debugBtn.addEventListener("click", () => {
+    debugOn = !debugOn;
+    localStorage.setItem("voicepr:debug", debugOn ? "1" : "0");
+    applyDebug();
+  });
+  applyDebug();
 
   // ---------- context chip (via the background worker) ------------------------
   // The content script can't hit localhost directly (Chrome blocks the loopback
@@ -266,12 +271,12 @@
     chunks = [];
     timeline = [];
     recStart = Date.now();
-    pushTimeline();
+    pushTimeline("start");
     sendBtn.disabled = false; // Dispatch is live the entire time
     toggleBtn.textContent = "❚❚ Pause";
     toggleBtn.classList.add("vp-recording");
     paintLooking();
-    anchorTimer = setInterval(() => (paintLooking(), pushTimeline()), 1200);
+    anchorTimer = setInterval(() => (paintLooking(), pushTimeline("scroll")), 1200);
     mediaRecorder = new MediaRecorder(mediaStream, mimeType());
     mediaRecorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     mediaRecorder.onstop = () => {
@@ -297,7 +302,7 @@
       paused = false;
       recording = true;
       try { mediaRecorder.resume(); } catch {}
-      anchorTimer = setInterval(() => (paintLooking(), pushTimeline()), 1200);
+      anchorTimer = setInterval(() => (paintLooking(), pushTimeline("scroll")), 1200);
       toggleBtn.textContent = "❚❚ Pause";
       toggleBtn.classList.add("vp-recording");
     }
@@ -322,12 +327,6 @@
     });
   }
   toggleBtn.addEventListener("click", pauseResume);
-  typeEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      addSegment(typeEl.value);
-      typeEl.value = "";
-    }
-  });
 
   // ---------- dispatch: click and be on your way ------------------------------
   // Never blocks. Stops the mic, then hands the audio + typed comments to the
@@ -336,7 +335,15 @@
   sendBtn.addEventListener("click", async () => {
     if (dispatched) return;
     dispatched = true;
+    // recording is over — clear the red indicator immediately (don't leave a
+    // stuck "❚❚ Pause" button).
+    recording = false;
+    paused = false;
+    clearInterval(anchorTimer);
     toggleBtn.disabled = true;
+    toggleBtn.textContent = "● Record";
+    toggleBtn.classList.remove("vp-recording");
+    lookingEl.textContent = "";
     sendBtn.disabled = true;
     sendBtn.textContent = "Sent ✓";
     statusEl.hidden = false;
