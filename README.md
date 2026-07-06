@@ -128,8 +128,8 @@ item so you can see the clarification path). Nothing real is touched.
    push-to-talk; the transcript is editable before you fire.
 3. **`lib/pipeline.js`** — one batch end-to-end: parse PR → `gh pr view/diff` →
    clone the head branch into a temp dir → run `claude -p` there → read the
-   agent's manifest → `git push` → post anchored comments (+ one clarification
-   comment) via `gh`.
+   agent's manifest → verify the commits → `git push` → post anchored comments
+   (+ one clarification comment) via `gh`.
 4. **`lib/prompt.js`** — instructs the agent to segment the transcript,
    confidence-gate each item, make one commit per confident item, and write a
    strict JSON manifest (`file`, `line`, `commitSha`, `rationale`, or a
@@ -143,7 +143,10 @@ voice-pr can execute a batch in one of two ways, selected by `VOICE_PR_BACKEND`:
 
 ### `direct` (default)
 Runs `claude -p` in an isolated clone on the host, commits per item, pushes,
-and posts the anchored comments itself. Self-contained; nothing else required.
+and posts the anchored comments itself. Before pushing, it runs
+`VOICE_PR_VERIFY_CMD` when set; otherwise it runs root `build.sh` and `test.sh`
+when present. If no verification command is available, the direct backend fails
+before pushing so unverified agent commits do not land silently.
 
 ### `orchestrator` — ports voice-pr into the containerized pogo loop
 Instead of running the agent itself, voice-pr becomes a **producer of work
@@ -188,6 +191,7 @@ file, or `ANTHROPIC_API_KEY`). OAuth tokens expire — if the mayor/polecats log
 | `VOICE_PR_BACKEND` | `direct` | `direct` (host `claude -p`) or `orchestrator` (pogo loop) |
 | `VOICE_PR_MODEL` | `claude-sonnet-5` | model for the headless agent (direct backend) |
 | `VOICE_PR_TIMEOUT_MS` | `360000` | agent timeout per batch (direct backend) |
+| `VOICE_PR_VERIFY_CMD` | unset | shell command run in the PR checkout before direct-backend push; overrides `build.sh`/`test.sh` discovery |
 | `VOICE_PR_CONTAINER` | `codingagent` | orchestrator container name |
 | `VOICE_PR_WORKSPACE` | `/home/pogo/workspace` | repo checkout root inside the container |
 | `VOICE_PR_DISPATCH_MS` | `720000` | how long to track a work item before returning |
@@ -211,8 +215,9 @@ recording, its transcript, and the orchestrator run it produced.
 - **Same-repo PRs only** — fork/cross-repo head branches are rejected (would
   need a remote-add + push-to-fork path).
 - **Confidence ≠ correctness.** The agent can be confidently wrong; the backstop
-  is that everything is a reviewable commit, never an auto-merge. A verify step
-  (build/test the agent's commits before pushing) is the obvious next guard.
+  is that everything is a reviewable commit, never an auto-merge. The direct
+  backend also verifies committed changes before pushing, but review remains the
+  final safety check.
 - **No concurrency control** — fire a second batch before the first finishes and
   two agents race on the same branch. Real version needs a per-branch queue.
 - **Browser speech only** — Web Speech API (Chrome). A server-side transcription
