@@ -16,6 +16,21 @@
 }
 #voicepr-root * { box-sizing: border-box; }
 
+/* gaze dot — where the on-device eye tracker thinks you're looking */
+#vp-gazedot {
+  position: fixed;
+  z-index: 2147482998;
+  pointer-events: none;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border-radius: 50%;
+  border: 2px solid #7ee787;
+  background: rgba(126, 231, 135, 0.22);
+  box-shadow: 0 0 10px rgba(126, 231, 135, 0.5);
+  transition: top 0.08s linear, left 0.08s linear;
+}
+
 /* the "laser" line-highlight under the cursor while recording */
 #vp-laser {
   position: fixed;

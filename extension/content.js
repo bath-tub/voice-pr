@@ -216,6 +216,7 @@
       <div class="vp-head">
         <span class="vp-title">🎙️ voice-pr</span>
         <span class="vp-head-right">
+          <button id="vp-gaze-btn" class="vp-dbg" title="experimental: on-device webcam eye tracking (video never leaves your machine)">👁 gaze</button>
           <button id="vp-debug-btn" class="vp-dbg" title="show what's being captured as you talk">🐛 debug</button>
           <button id="vp-close" class="vp-x">✕</button>
         </span>
@@ -249,6 +250,12 @@
     });
   }
 
+  // Gaze dot — where the eye tracker thinks you're looking.
+  const gazeDot = document.createElement("div");
+  gazeDot.id = "vp-gazedot";
+  gazeDot.style.display = "none";
+  document.body.appendChild(gazeDot);
+
   const $ = (id) => root.querySelector(id);
   const pill = $("#vp-pill"),
     panel = $("#vp-panel"),
@@ -256,6 +263,7 @@
     lookingEl = $("#vp-looking"),
     debugEl = $("#vp-debug"),
     debugBtn = $("#vp-debug-btn"),
+    gazeBtn = $("#vp-gaze-btn"),
     toggleBtn = $("#vp-toggle"),
     sendBtn = $("#vp-send"),
     statusEl = $("#vp-status");
@@ -283,6 +291,7 @@
     hoverKey = "";
     clearTimeout(dwellTimer);
     laser.style.display = "none";
+    gazeDot.style.display = "none";
   }
   function resetUI() {
     statusEl.hidden = true;
@@ -334,6 +343,59 @@
     applyDebug();
   });
   applyDebug();
+
+  // ---------- gaze: experimental on-device webcam eye tracking ----------------
+  // WebGazer runs entirely in-browser — webcam frames never leave the machine
+  // (only the face model downloads once from Google). Gaze is just another
+  // timeline source: predictions → anchorAtPoint(x,y) → pushTimeline("gaze").
+  let gazeOn = false,
+    gazeThrottle = 0,
+    gazeKey = "";
+  function onGaze(x, y) {
+    if (x == null || y == null) return;
+    Object.assign(gazeDot.style, { display: "block", left: `${x}px`, top: `${y}px` });
+    const now = Date.now();
+    if (now - gazeThrottle < 150) return;
+    gazeThrottle = now;
+    const a = anchorAtPoint(x, y);
+    if (!a) return;
+    const key = `${a.file}:${a.line}:${a.token || ""}`;
+    if (key === gazeKey) return;
+    gazeKey = key;
+    if (recording) pushTimeline("gaze", a);
+  }
+  // test/injection seam: a synthetic gaze coordinate (real source is WebGazer).
+  window.addEventListener("vp-synthetic-gaze", (e) => onGaze(e.detail?.x, e.detail?.y));
+  async function startGaze() {
+    gazeBtn.classList.add("on");
+    lookingEl.innerHTML = `<span class="vp-dim">👁 starting eye tracking (on-device)… allow the camera, then look around the diff to calibrate</span>`;
+    try {
+      if (typeof window.webgazer === "undefined") {
+        const res = await new Promise((r) => chrome.runtime.sendMessage({ type: "inject-webgazer" }, r));
+        if (!res?.ok) throw new Error(res?.error || "failed to load webgazer");
+      }
+      const wg = window.webgazer;
+      wg.setGazeListener((data) => data && onGaze(data.x, data.y));
+      wg.showVideoPreview?.(false);
+      wg.showPredictionPoints?.(false);
+      wg.showFaceOverlay?.(false);
+      await wg.begin();
+      gazeDot.style.display = "block";
+    } catch (e) {
+      gazeOn = false;
+      gazeBtn.classList.remove("on");
+      lookingEl.innerHTML = `<span class="vp-warn">gaze unavailable: ${escapeHtml(String(e.message || e))}</span>`;
+    }
+  }
+  function stopGaze() {
+    gazeBtn.classList.remove("on");
+    gazeDot.style.display = "none";
+    try { window.webgazer?.pause?.(); } catch {}
+  }
+  gazeBtn.addEventListener("click", () => {
+    gazeOn = !gazeOn;
+    gazeOn ? startGaze() : stopGaze();
+  });
 
   // ---------- context chip (via the background worker) ------------------------
   // The content script can't hit localhost directly (Chrome blocks the loopback
