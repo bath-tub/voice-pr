@@ -171,7 +171,6 @@
           }${escapeHtml(s.text)}</li>`
       )
       .join("");
-    sendBtn.disabled = recording || segments.length === 0;
     segEl.scrollTop = segEl.scrollHeight;
   }
   function addSegment(text) {
@@ -199,79 +198,84 @@
     });
   }
 
-  // ---------- audio recording (local Whisper on the bridge) -------------------
+  // ---------- audio recording ------------------------------------------------
+  let paused = false,
+    dispatched = false,
+    stopResolve = null;
   function paintLooking() {
+    if (paused) return (lookingEl.innerHTML = `<span class="vp-dim">⏸ paused</span>`);
     if (!recording) return (lookingEl.textContent = "");
     const secs = Math.floor((Date.now() - recStart) / 1000);
-    const mm = String(Math.floor(secs / 60)).padStart(1, "0");
-    const ss = String(secs % 60).padStart(2, "0");
-    lookingEl.innerHTML = `<span class="vp-dim">🔴 recording ${mm}:${ss} · looking at ${escapeHtml(
-      fmtAnchor(anchorNow())
-    )}</span>`;
-  }
-  async function start() {
-    if (recording) return;
-    try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (e) {
-      lookingEl.innerHTML = `<span class="vp-warn">mic blocked — allow the mic (🔒 in the address bar) or just type comments</span>`;
-      return;
-    }
-    recording = true;
-    chunks = [];
-    timeline = [];
-    recStart = Date.now();
-    pushTimeline();
-    sendBtn.disabled = true;
-    toggleBtn.textContent = "■ Stop & transcribe";
-    toggleBtn.classList.add("vp-recording");
-    paintLooking();
-    anchorTimer = setInterval(() => {
-      paintLooking();
-      pushTimeline(); // periodic sample so scrolling (no click) is captured too
-    }, 1200);
-    mediaRecorder = new MediaRecorder(mediaStream, mimeType());
-    mediaRecorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    mediaRecorder.onstop = onRecordingStopped;
-    mediaRecorder.start();
+    lookingEl.innerHTML = `<span class="vp-dim">🔴 recording ${Math.floor(secs / 60)}:${String(
+      secs % 60
+    ).padStart(2, "0")} · looking at ${escapeHtml(fmtAnchor(anchorNow()))}</span>`;
   }
   function mimeType() {
     for (const t of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"])
       if (window.MediaRecorder?.isTypeSupported(t)) return { mimeType: t };
     return {};
   }
-  function stop() {
-    if (!recording) return;
-    recording = false;
-    clearInterval(anchorTimer);
-    toggleBtn.classList.remove("vp-recording");
-    toggleBtn.disabled = true;
-    lookingEl.innerHTML = `<span class="vp-dim">⏳ transcribing locally with Whisper…</span>`;
+  async function start() {
+    if (recording || mediaRecorder) return;
     try {
-      mediaRecorder?.stop();
-    } catch {}
-    mediaStream?.getTracks().forEach((t) => t.stop());
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      lookingEl.innerHTML = `<span class="vp-warn">mic blocked — allow it (🔒 in the address bar) or just type comments</span>`;
+      sendBtn.disabled = false; // can still dispatch typed comments
+      return;
+    }
+    recording = true;
+    paused = false;
+    chunks = [];
+    timeline = [];
+    recStart = Date.now();
+    pushTimeline();
+    sendBtn.disabled = false; // Dispatch is live the entire time
+    toggleBtn.textContent = "❚❚ Pause";
+    toggleBtn.classList.add("vp-recording");
+    paintLooking();
+    anchorTimer = setInterval(() => (paintLooking(), pushTimeline()), 1200);
+    mediaRecorder = new MediaRecorder(mediaStream, mimeType());
+    mediaRecorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(chunks, { type: chunks[0]?.type || "audio/webm" });
+      const ext = /mp4/.test(blob.type) ? "mp4" : "webm";
+      (blob.size ? blobToB64(blob) : Promise.resolve(null)).then((b64) => {
+        stopResolve?.(b64 ? { audioB64: b64, ext } : null);
+        stopResolve = null;
+      });
+    };
+    mediaRecorder.start();
   }
-  async function onRecordingStopped() {
-    const blob = new Blob(chunks, { type: chunks[0]?.type || "audio/webm" });
-    const ext = /mp4/.test(blob.type) ? "mp4" : "webm";
-    const audioB64 = await blobToB64(blob);
-    chrome.runtime.sendMessage(
-      { type: "transcribe", audioB64, ext, timeline, sessionId, prUrl },
-      (res) => {
-        toggleBtn.disabled = false;
-        toggleBtn.textContent = "● Record more";
-        if (!res || !res.ok || res.json?.error) {
-          lookingEl.innerHTML = `<span class="vp-warn">transcription failed: ${escapeHtml(
-            res?.json?.error || res?.error || "bridge unreachable"
-          )}</span>`;
-          return;
-        }
-        lookingEl.textContent = "";
-        for (const s of res.json.segments || []) segments.push(s);
-        renderSegments();
-      }
-    );
+  function pauseResume() {
+    if (!mediaRecorder) return;
+    if (!paused) {
+      paused = true;
+      recording = false;
+      clearInterval(anchorTimer);
+      try { mediaRecorder.pause(); } catch {}
+      toggleBtn.textContent = "● Resume";
+      toggleBtn.classList.remove("vp-recording");
+    } else {
+      paused = false;
+      recording = true;
+      try { mediaRecorder.resume(); } catch {}
+      anchorTimer = setInterval(() => (paintLooking(), pushTimeline()), 1200);
+      toggleBtn.textContent = "❚❚ Pause";
+      toggleBtn.classList.add("vp-recording");
+    }
+    paintLooking();
+  }
+  function stopAndGetAudio() {
+    return new Promise((resolve) => {
+      if (!mediaRecorder || mediaRecorder.state === "inactive") return resolve(null);
+      stopResolve = resolve;
+      recording = false;
+      paused = false;
+      clearInterval(anchorTimer);
+      try { mediaRecorder.stop(); } catch { resolve(null); }
+      mediaStream?.getTracks().forEach((t) => t.stop());
+    });
   }
   function blobToB64(blob) {
     return new Promise((resolve) => {
@@ -280,7 +284,7 @@
       r.readAsDataURL(blob);
     });
   }
-  toggleBtn.addEventListener("click", () => (recording ? stop() : start()));
+  toggleBtn.addEventListener("click", pauseResume);
   typeEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       addSegment(typeEl.value);
@@ -288,27 +292,35 @@
     }
   });
 
-  // ---------- hand off to the orchestrator ------------------------------------
+  // ---------- dispatch: click and be on your way ------------------------------
+  // Never blocks. Stops the mic, then hands the audio + typed comments to the
+  // bridge, which transcribes AND dispatches server-side — so you can close the
+  // tab immediately; the work completes without this page.
   sendBtn.addEventListener("click", async () => {
-    if (recording || !segments.length) return; // finish recording first
-    sendBtn.disabled = true;
+    if (dispatched) return;
+    dispatched = true;
     toggleBtn.disabled = true;
+    sendBtn.disabled = true;
+    sendBtn.textContent = "Sent ✓";
     statusEl.hidden = false;
-    statusEl.innerHTML = `<div class="vp-line">handing ${segments.length} comment(s) to the orchestrator…</div>
-      <div class="vp-reassure">You can close this tab — the PR updates in a few minutes.</div>`;
+    statusEl.innerHTML = `<div class="vp-result ok">✅ On it — handed to the orchestrator.</div>
+      <div class="vp-reassure">You can close this tab. Transcription + the work run on the server; the PR updates in a few minutes.</div>`;
+    const audio = await stopAndGetAudio();
     try {
-      const port = chrome.runtime.connect({ name: "session" });
+      const port = chrome.runtime.connect({ name: "dispatch" });
       port.onMessage.addListener((ev) => {
         if (ev.stage === "_end") return port.disconnect();
         onEvent(ev);
       });
-      port.postMessage({ prRef: prUrl, segments, sessionId });
+      port.postMessage({ prRef: prUrl, sessionId, typedSegments: segments, timeline, ...(audio || {}) });
     } catch (e) {
       line(`error: ${e.message}`, true);
     }
   });
 
   const STAGE = {
+    transcribing: () => `transcribing your audio locally (Whisper)…`,
+    transcribed: (d) => `heard ${d.count} comment(s): “${(d.text || "").slice(0, 60)}…”`,
     "pr-loaded": (d) => `loaded PR (branch ${d.branch})`,
     context: (d) =>
       `context: ${d.segments} comments${d.jiraKey ? `, ticket ${d.jiraKey}` : ""}${

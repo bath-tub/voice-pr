@@ -38,6 +38,8 @@ const server = createServer(async (req, res) => {
       return await handleContext(url, res);
     if (req.method === "POST" && url.pathname === "/api/transcribe")
       return await handleTranscribe(req, res);
+    if (req.method === "POST" && url.pathname === "/api/dispatch")
+      return await handleDispatch(req, res);
     if (req.method === "POST" && url.pathname === "/api/session")
       return await handleStream(req, res, (input, send) => runSession(input, send));
     if (req.method === "POST" && url.pathname === "/api/batch")
@@ -49,6 +51,71 @@ const server = createServer(async (req, res) => {
     res.end(`error: ${e.message}`);
   }
 });
+
+// Combined, fire-and-forget path for the extension: transcribe the recording
+// AND dispatch to the orchestrator, entirely server-side, streaming progress.
+// Completes even if the client closes the tab.
+async function handleDispatch(req, res) {
+  const body = await readBody(req);
+  const input = JSON.parse(body || "{}");
+  const { prRef, sessionId, audioB64, ext = "webm", timeline = [], typedSegments = [] } = input;
+
+  res.writeHead(200, {
+    "content-type": "application/x-ndjson",
+    "cache-control": "no-cache",
+    "x-accel-buffering": "no",
+  });
+  const t0 = Date.now();
+  const events = [];
+  const send = (stage, detail) => {
+    events.push({ stage, detail, t: Math.round((Date.now() - t0) / 1000) });
+    res.write(JSON.stringify({ stage, detail, t: Math.round((Date.now() - t0) / 1000) }) + "\n");
+  };
+
+  let segs = [...(typedSegments || [])];
+  let result = null,
+    err = null;
+  try {
+    if (audioB64) {
+      send("transcribing", {});
+      const audio = Buffer.from(audioB64, "base64");
+      const raw = await transcribe(audio, ext);
+      const anchored = anchorSegments(raw, timeline);
+      if (sessionId) {
+        await saveAudio(sessionId, audio, ext);
+        await saveJson(sessionId, "transcript.json", {
+          at: new Date().toISOString(),
+          prUrl: prRef,
+          raw: raw.map((s) => s.text).join(" "),
+          segments: anchored,
+          rawSegments: raw,
+          timeline,
+        });
+      }
+      send("transcribed", { count: anchored.length, text: raw.map((s) => s.text).join(" ") });
+      segs = [...anchored, ...segs];
+    }
+    if (!segs.length) throw new Error("nothing captured — no speech and no typed comments");
+    result = await runSession({ prRef, segments: segs }, send);
+    send("result", result);
+  } catch (e) {
+    err = e.message;
+    console.error(`[dispatch] error: ${e.message}`);
+    send("error", { message: e.message });
+  } finally {
+    if (sessionId)
+      await saveJson(sessionId, "session.json", {
+        at: new Date().toISOString(),
+        prRef,
+        segments: segs,
+        transcript: segs.map((s) => s.text).join(" "),
+        result,
+        error: err,
+        events,
+      }).catch(() => {});
+    res.end();
+  }
+}
 
 async function handleTranscribe(req, res) {
   try {

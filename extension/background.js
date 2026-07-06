@@ -33,13 +33,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 });
 
-// Streaming: a live session. The content script opens a port; we POST the
-// session and stream each NDJSON progress event back over the port.
+// Streaming: a session (/api/session) or the combined transcribe+dispatch
+// (/api/dispatch). The content script opens a port; we POST and stream each
+// NDJSON progress event back. The fetch lives here in the worker, so it keeps
+// going even if the PR tab closes.
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== "session") return;
+  if (port.name !== "session" && port.name !== "dispatch") return;
+  const endpoint = port.name === "dispatch" ? "/api/dispatch" : "/api/session";
   port.onMessage.addListener(async (payload) => {
     try {
-      const res = await fetch(`${BRIDGE}/api/session`, {
+      const res = await fetch(`${BRIDGE}${endpoint}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
