@@ -4,6 +4,8 @@
 // is handed to the local bridge → orchestrator.
 (function () {
   const BRIDGE = "http://localhost:4100";
+  const anchors = window.VoicePrAnchors.createAnchorResolver(document, window);
+  const attention = window.VoicePrAnchors.createAttentionTracker();
   const m = location.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
   if (!m) return;
   const prUrl = `${location.origin}/${m[1]}/${m[2]}/pull/${m[3]}`;
@@ -18,16 +20,26 @@
     mediaStream = null,
     chunks = [],
     recStart = 0,
+    sessionStart = 0,
+    audioStartMs = 0,
     timeline = [],
+    captureOpen = false,
     paused = false,
     dispatched = false,
     stopResolve = null,
-    activePort = null;
+    activePort = null,
+    attentionTimer = null,
+    hudFeed = [];
+  const HUD_FEED_MAX = 8;
   function pushTimeline(src = "scroll", anchor) {
-    if (!recording) return;
+    if (!captureOpen || !sessionStart) return;
     const a = anchor || anchorNow();
-    timeline.push({ t: Date.now() - recStart, src, ...a });
+    timeline.push({ t: Date.now() - sessionStart, src, ...a });
     debugLine(a, src);
+    hudFeed.unshift({ ts: Date.now(), src, anchor: a });
+    if (hudFeed.length > HUD_FEED_MAX) hudFeed.length = HUD_FEED_MAX;
+    renderHud();
+    if (!recording) paintLooking();
   }
 
   // ---------- diff anchoring (view-agnostic) ----------------------------------
@@ -35,55 +47,8 @@
   // (the same scheme in your URL bar), and the file sidebar maps #diff-<hash> to
   // the path. This works on BOTH the classic /files view and the new React
   // /changes view, so we anchor off it and fall back to classic DOM selectors.
-  function fileMap() {
-    const map = {};
-    document.querySelectorAll('a[href^="#diff-"]').forEach((a) => {
-      const m = (a.getAttribute("href") || "").match(/^#diff-([0-9a-f]+)$/);
-      const path = (a.textContent || "").trim();
-      if (m && path && !map[m[1]]) map[m[1]] = path;
-    });
-    return map;
-  }
-  // Nearest diff-line deep-link id to a node → { hash, side, line } (line may be
-  // null if only the file container id is found).
-  function diffAnchor(el) {
-    let node = el && (el.nodeType === 3 ? el.parentElement : el);
-    if (!node) return null;
-    let hash = null;
-    const LINE = /^diff-([0-9a-f]+)([LR])(\d+)$/;
-    for (let n = node, d = 0; n && n !== document.body && d < 8; n = n.parentElement, d++) {
-      let m = (n.id || "").match(LINE);
-      if (m) return { hash: m[1], side: m[2], line: +m[3] };
-      const fm = (n.id || "").match(/^diff-([0-9a-f]+)$/);
-      if (fm && !hash) hash = fm[1];
-      const row = n.closest?.("tr");
-      if (row) {
-        const hit = [...row.querySelectorAll("[id]")].find((x) => LINE.test(x.id));
-        if (hit) { const mm = hit.id.match(LINE); return { hash: mm[1], side: mm[2], line: +mm[3] }; }
-      }
-    }
-    return hash ? { hash, side: null, line: null } : null;
-  }
-  function fileOf(el) {
-    const a = diffAnchor(el);
-    if (a) { const p = fileMap()[a.hash]; if (p) return p; }
-    const f = el && el.closest?.("[data-tagsearch-path], .file, .js-file");
-    return f
-      ? f.getAttribute?.("data-tagsearch-path") ||
-          f.querySelector?.(".file-header")?.getAttribute("data-path") ||
-          f.querySelector?.("[data-path]")?.getAttribute("data-path") ||
-          null
-      : null;
-  }
-  function lineOf(el) {
-    const a = diffAnchor(el);
-    if (a && a.line != null) return a.line;
-    const row = el && (el.nodeType === 3 ? el.parentElement : el)?.closest?.("tr");
-    if (!row) return null;
-    const nums = [...row.querySelectorAll("td.blob-num[data-line-number]")];
-    const n = nums.length ? parseInt(nums[nums.length - 1].getAttribute("data-line-number"), 10) : NaN;
-    return Number.isFinite(n) ? n : null;
-  }
+  const fileOf = (el) => anchors.fileOf(el);
+  const lineOf = (el) => anchors.lineOf(el);
 
   // Track what the user last selected / clicked in the diff — richer than the
   // viewport, and what people actually do ("highlight this, then say what's wrong").
@@ -118,6 +83,11 @@
     if (file && line != null) lastClick = { file, line, ts: Date.now() };
     pushTimeline("click");
   });
+  document.addEventListener("copy", () => {
+    if (!captureOpen) return;
+    const s = selAnchor();
+    if (s) pushTimeline("copy", s);
+  });
 
   // The code token/identifier directly under a screen point (the "laser dot").
   function tokenAt(x, y) {
@@ -142,7 +112,7 @@
     return { file, line: lineOf(el), token: tokenAt(x, y) || null, x: Math.round(x), y: Math.round(y) };
   }
 
-  // Mouse-as-laser: while recording, continuously capture where the pointer is
+  // Mouse-as-laser: while the session is open, continuously capture where the pointer is
   // over the diff — movement (on change), dwell (lingering = strong attention),
   // and the token under it. Throttled; only logs when the target changes.
   let lastHover = null,
@@ -150,7 +120,7 @@
     moveThrottle = 0,
     dwellTimer = null;
   document.addEventListener("mousemove", (e) => {
-    if (!recording) return;
+    if (!captureOpen) return;
     const now = Date.now();
     laserPaint(e.clientX, e.clientY);
     if (now - moveThrottle < 120) return;
@@ -164,42 +134,46 @@
     pushTimeline("move", a);
     clearTimeout(dwellTimer);
     dwellTimer = setTimeout(() => {
-      if (recording && hoverKey === key) pushTimeline("dwell", a); // lingered here
+      if (captureOpen && hoverKey === key) pushTimeline("dwell", a); // lingered here
     }, 700);
   });
 
   // Viewport-center fallback (what's on screen if you didn't select/click).
   function anchorViewport() {
-    const cy = window.innerHeight / 2;
-    const el = document.elementFromPoint(Math.min(window.innerWidth / 2, 400), cy);
-    const file = fileOf(el);
-    if (!file) return { file: null, line: null };
-    let best = null,
-      bestDist = Infinity;
-    el.closest("[data-tagsearch-path], .file, .js-file")
-      ?.querySelectorAll("td.blob-num[data-line-number]")
-      .forEach((td) => {
-        const r = td.getBoundingClientRect();
-        const d = Math.abs((r.top + r.bottom) / 2 - cy);
-        if (d < bestDist) (bestDist = d), (best = td);
-      });
-    const line = best ? parseInt(best.getAttribute("data-line-number"), 10) : null;
-    return { file, line: Number.isFinite(line) ? line : null };
+    return anchors.anchorViewport();
   }
+
+  // scroll-pause: motion followed by a stop is a strong "landed here" signal —
+  // more meaningful than the constant scroll noise while actively flicking
+  // through the diff. Capture-phase listener so nested diff scroll containers
+  // (which don't bubble "scroll") are still caught.
+  let scrollPauseTimer = null;
+  function onScroll() {
+    if (!captureOpen) return;
+    clearTimeout(scrollPauseTimer);
+    scrollPauseTimer = setTimeout(() => {
+      if (!captureOpen) return;
+      const v = anchorViewport();
+      pushTimeline("scroll-pause", { ...v, via: "viewport", weight: attention.weightOf(v) });
+    }, 260);
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+  document.addEventListener("scroll", onScroll, { passive: true, capture: true });
 
   // A live text selection always wins; otherwise take the MOST RECENT signal
   // among selection / click / pointer-hover (pointing counts as attention).
   function anchorNow() {
     const live = selAnchor();
-    if (live) return live;
+    if (live) return { ...live, via: "select" };
     const cands = [lastSel, lastClick, lastHover].filter(
       (x) => x && Date.now() - x.ts < (x === lastHover ? 4000 : 12000)
     );
     if (cands.length) {
       const c = cands.sort((a, b) => b.ts - a.ts)[0];
-      return { file: c.file, line: c.line, endLine: c.endLine, snippet: c.snippet, token: c.token };
+      const via = c === lastClick ? "click" : c === lastHover ? "hover" : "select";
+      return { file: c.file, line: c.line, endLine: c.endLine, snippet: c.snippet, token: c.token, via };
     }
-    return anchorViewport();
+    return { ...anchorViewport(), via: "viewport" };
   }
   function fmtAnchor(a) {
     if (!a || !a.file) return "no target — will infer from words";
@@ -223,6 +197,17 @@
       </div>
       <div id="vp-context" class="vp-context">PR #${m[3]}</div>
       <div id="vp-looking" class="vp-looking"></div>
+      <div id="vp-hud" class="vp-hud" hidden>
+        <div class="vp-hud-current">
+          <span id="vp-hud-pulse" class="vp-pulse"></span>
+          <span id="vp-hud-anchor" class="vp-hud-anchor">—</span>
+        </div>
+        <ol id="vp-hud-feed" class="vp-hud-feed"></ol>
+        <div class="vp-hud-top">
+          <div class="vp-hud-top-label">Most attended</div>
+          <ol id="vp-hud-topn" class="vp-hud-topn"></ol>
+        </div>
+      </div>
       <div id="vp-debug" class="vp-debug" hidden></div>
       <div class="vp-actions">
         <button id="vp-toggle" class="vp-rec">● Record</button>
@@ -238,9 +223,8 @@
   laser.style.display = "none";
   document.body.appendChild(laser);
   function laserPaint(x, y) {
-    const cell = recording && document.elementFromPoint(x, y)?.closest?.("td.blob-code");
-    if (!cell) return void (laser.style.display = "none");
-    const r = cell.getBoundingClientRect();
+    const r = captureOpen && anchors.highlightRectAtPoint(x, y);
+    if (!r) return void (laser.style.display = "none");
     Object.assign(laser.style, {
       display: "block",
       top: `${r.top}px`,
@@ -266,7 +250,51 @@
     gazeBtn = $("#vp-gaze-btn"),
     toggleBtn = $("#vp-toggle"),
     sendBtn = $("#vp-send"),
-    statusEl = $("#vp-status");
+    statusEl = $("#vp-status"),
+    hudEl = $("#vp-hud"),
+    hudPulseEl = $("#vp-hud-pulse"),
+    hudAnchorEl = $("#vp-hud-anchor"),
+    hudFeedEl = $("#vp-hud-feed"),
+    hudTopEl = $("#vp-hud-topn");
+
+  // ---------- live attention HUD: always visible while a session is open -----
+  const SIGNAL_ICON = {
+    open: "🟢",
+    "record-start": "🔴",
+    click: "🖱️",
+    select: "✂️",
+    move: "➡️",
+    dwell: "⏳",
+    gaze: "👁",
+    scroll: "🕐",
+    "scroll-pause": "🛑",
+    copy: "📋",
+    revisit: "↩️",
+  };
+  function renderHud() {
+    hudEl.hidden = !captureOpen;
+    if (!captureOpen) return;
+    hudPulseEl.classList.toggle("vp-pulse-live", captureOpen);
+    hudAnchorEl.textContent = fmtAnchor(anchorNow());
+
+    hudFeedEl.innerHTML = "";
+    for (const item of hudFeed) {
+      const age = Math.max(0, Math.round((Date.now() - item.ts) / 1000));
+      const li = document.createElement("li");
+      li.className = "vp-hud-row";
+      li.textContent = `${SIGNAL_ICON[item.src] || "•"} ${fmtAnchor(item.anchor)} · ${age}s`;
+      hudFeedEl.appendChild(li);
+    }
+
+    hudTopEl.innerHTML = "";
+    for (const entry of attention.topN(5)) {
+      const li = document.createElement("li");
+      li.className = "vp-hud-row";
+      const secs = Math.round(entry.weight / 1000);
+      li.textContent = `${entry.file}:${entry.line} · ${secs}s${entry.visits > 1 ? ` · ${entry.visits}×` : ""}`;
+      hudTopEl.appendChild(li);
+    }
+  }
 
   // Tear down all in-flight state and return the panel to a clean, fresh-session
   // state. Called on every open so reopening after a send/stop is never janky.
@@ -274,24 +302,35 @@
     try { if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop(); } catch {}
     mediaStream?.getTracks().forEach((t) => t.stop());
     clearInterval(anchorTimer);
+    clearInterval(attentionTimer);
+    clearTimeout(scrollPauseTimer);
     try { activePort?.disconnect(); } catch {}
     mediaRecorder = null;
     mediaStream = null;
     stopResolve = null;
     activePort = null;
+    attentionTimer = null;
     recording = false;
     paused = false;
     dispatched = false;
     chunks = [];
+    recStart = 0;
+    sessionStart = 0;
+    audioStartMs = 0;
     timeline = [];
+    captureOpen = false;
     segments = [];
     lastSel = null;
     lastClick = null;
     lastHover = null;
     hoverKey = "";
+    hudFeed = [];
+    attention.reset();
     clearTimeout(dwellTimer);
+    stopGaze();
     laser.style.display = "none";
     gazeDot.style.display = "none";
+    renderHud();
   }
   function resetUI() {
     statusEl.hidden = true;
@@ -311,9 +350,20 @@
     teardown();
     resetUI();
     sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    sessionStart = Date.now();
+    captureOpen = true;
     panel.hidden = false;
     pill.hidden = true;
     loadContext();
+    paintLooking();
+    pushTimeline("open");
+    attentionTimer = setInterval(() => {
+      const v = anchorViewport();
+      const info = attention.tick(v);
+      if (info.revisit) pushTimeline("revisit", { ...v, via: "viewport", weight: attention.weightOf(v) });
+      else renderHud();
+    }, 1000);
+    renderHud();
     start();
   });
   $("#vp-close").addEventListener("click", () => {
@@ -330,7 +380,7 @@
   }
   function debugLine(a, src) {
     if (!debugOn) return;
-    const secs = Math.floor((Date.now() - recStart) / 1000);
+    const secs = Math.floor((Date.now() - sessionStart) / 1000);
     const row = document.createElement("div");
     row.className = "vp-dbgrow";
     row.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} · ${src} · ${fmtAnchor(a)}`;
@@ -345,12 +395,20 @@
   applyDebug();
 
   // ---------- gaze: experimental on-device webcam eye tracking ----------------
-  // WebGazer runs entirely in-browser — webcam frames never leave the machine
-  // (only the face model downloads once from Google). Gaze is just another
-  // timeline source: predictions → anchorAtPoint(x,y) → pushTimeline("gaze").
+  // WebGazer runs in an extension-origin iframe so GitHub's page CSP and camera
+  // origin do not own the webcam/model execution path. The content script only
+  // receives viewport coordinates and maps them onto the PR diff DOM.
+  const GAZE_URL = chrome.runtime.getURL("gaze.html");
+  const GAZE_ORIGIN = new URL(GAZE_URL).origin;
   let gazeOn = false,
     gazeThrottle = 0,
-    gazeKey = "";
+    gazeKey = "",
+    gazeFrame = null,
+    gazeReady = false,
+    gazeReadyPromise = null,
+    gazeReadyResolve = null,
+    gazeReadyReject = null,
+    gazeReadyTimer = null;
   function onGaze(x, y) {
     if (x == null || y == null) return;
     Object.assign(gazeDot.style, { display: "block", left: `${x}px`, top: `${y}px` });
@@ -362,44 +420,87 @@
     const key = `${a.file}:${a.line}:${a.token || ""}`;
     if (key === gazeKey) return;
     gazeKey = key;
-    if (recording) pushTimeline("gaze", a);
+    if (captureOpen) pushTimeline("gaze", a);
   }
   // test/injection seam: a synthetic gaze coordinate (real source is WebGazer).
   window.addEventListener("vp-synthetic-gaze", (e) => onGaze(e.detail?.x, e.detail?.y));
+  function ensureGazeFrame() {
+    if (gazeReady) return Promise.resolve();
+    if (gazeReadyPromise) return gazeReadyPromise;
+    gazeFrame = document.createElement("iframe");
+    gazeFrame.id = "vp-gaze-frame";
+    gazeFrame.title = "voice-pr extension-origin gaze tracker";
+    gazeFrame.allow = "camera";
+    gazeFrame.src = GAZE_URL;
+    gazeFrame.style.display = "none";
+    document.documentElement.appendChild(gazeFrame);
+    gazeReadyPromise = new Promise((resolve, reject) => {
+      gazeReadyResolve = resolve;
+      gazeReadyReject = reject;
+      gazeReadyTimer = setTimeout(() => {
+        gazeReadyPromise = null;
+        reject(new Error("gaze overlay did not initialize"));
+      }, 10000);
+    });
+    return gazeReadyPromise;
+  }
+  function postGaze(command, detail = {}) {
+    gazeFrame?.contentWindow?.postMessage({ type: "voice-pr-gaze-command", command, ...detail }, GAZE_ORIGIN);
+  }
+  function showGazeError(message) {
+    gazeOn = false;
+    gazeBtn.classList.remove("on");
+    gazeDot.style.display = "none";
+    if (gazeFrame) gazeFrame.style.display = "none";
+    lookingEl.innerHTML = `<span class="vp-warn">gaze unavailable: ${escapeHtml(String(message))}</span>`;
+  }
+  window.addEventListener("message", (event) => {
+    if (event.origin !== GAZE_ORIGIN || event.source !== gazeFrame?.contentWindow) return;
+    const msg = event.data;
+    if (!msg || msg.type !== "voice-pr-gaze") return;
+    if (msg.kind === "ready") {
+      gazeReady = true;
+      clearTimeout(gazeReadyTimer);
+      gazeReadyResolve?.();
+      return;
+    }
+    if (msg.kind === "prediction") return onGaze(msg.x, msg.y);
+    if (msg.kind === "started") {
+      gazeDot.style.display = "block";
+      lookingEl.innerHTML = `<span class="vp-dim">👁 look at a spot and click it a few times to calibrate — the green dot should start following your eyes</span>`;
+      return;
+    }
+    if (msg.kind === "status" && gazeOn) {
+      lookingEl.innerHTML = `<span class="vp-dim">👁 ${escapeHtml(msg.message || "starting eye tracking")}</span>`;
+      return;
+    }
+    if (msg.kind === "error") showGazeError(msg.message || "failed to start eye tracking");
+  });
   async function startGaze() {
     gazeBtn.classList.add("on");
     lookingEl.innerHTML = `<span class="vp-dim">👁 starting eye tracking (on-device)… allow the camera, then look around the diff to calibrate</span>`;
     try {
-      if (typeof window.webgazer === "undefined") {
-        const res = await new Promise((r) => chrome.runtime.sendMessage({ type: "inject-webgazer" }, r));
-        if (!res?.ok) throw new Error(res?.error || "failed to load webgazer");
-      }
-      const wg = window.webgazer;
-      wg.setGazeListener((data) => data && onGaze(data.x, data.y));
-      // Show WebGazer's own feedback so you can SEE it working + calibrate:
-      // the webcam preview + face mesh confirm tracking; the red dot is its
-      // raw prediction; our green #vp-gazedot is the anchored one.
-      wg.showVideoPreview?.(true);
-      wg.showFaceOverlay?.(true);
-      wg.showFaceFeedbackBox?.(true);
-      wg.showPredictionPoints?.(true);
-      await wg.begin();
-      gazeDot.style.display = "block";
-      lookingEl.innerHTML = `<span class="vp-dim">👁 look at a spot and click it a few times to calibrate — the green dot should start following your eyes</span>`;
+      await ensureGazeFrame();
+      gazeFrame.style.display = "block";
+      postGaze("start");
     } catch (e) {
-      gazeOn = false;
-      gazeBtn.classList.remove("on");
-      lookingEl.innerHTML = `<span class="vp-warn">gaze unavailable: ${escapeHtml(String(e.message || e))}</span>`;
+      showGazeError(e.message || e);
     }
   }
   function stopGaze() {
+    gazeOn = false;
     gazeBtn.classList.remove("on");
     gazeDot.style.display = "none";
-    try { window.webgazer?.pause?.(); } catch {}
+    postGaze("stop");
+    if (gazeFrame) gazeFrame.style.display = "none";
   }
+  document.addEventListener("click", (e) => {
+    if (gazeOn && gazeReady) postGaze("calibrate", { x: e.clientX, y: e.clientY });
+  });
   gazeBtn.addEventListener("click", () => {
-    gazeOn = !gazeOn;
-    gazeOn ? startGaze() : stopGaze();
+    if (gazeOn) return stopGaze();
+    gazeOn = true;
+    startGaze();
   });
 
   // ---------- context chip (via the background worker) ------------------------
@@ -423,7 +524,13 @@
   // ---------- audio recording ------------------------------------------------
   function paintLooking() {
     if (paused) return (lookingEl.innerHTML = `<span class="vp-dim">⏸ paused</span>`);
-    if (!recording) return (lookingEl.textContent = "");
+    if (!captureOpen) return (lookingEl.textContent = "");
+    if (!recording) {
+      lookingEl.innerHTML = `<span class="vp-dim">capturing attention · pointing at ${escapeHtml(
+        fmtAnchor(anchorNow())
+      )}</span>`;
+      return;
+    }
     const secs = Math.floor((Date.now() - recStart) / 1000);
     lookingEl.innerHTML = `<span class="vp-dim">🔴 recording ${Math.floor(secs / 60)}:${String(
       secs % 60
@@ -446,9 +553,10 @@
     recording = true;
     paused = false;
     chunks = [];
-    timeline = [];
     recStart = Date.now();
-    pushTimeline("start");
+    if (!sessionStart) sessionStart = recStart;
+    audioStartMs = recStart - sessionStart;
+    pushTimeline("record-start");
     sendBtn.disabled = false; // Dispatch is live the entire time
     toggleBtn.textContent = "❚❚ Pause";
     toggleBtn.classList.add("vp-recording");
@@ -516,7 +624,11 @@
     // stuck "❚❚ Pause" button).
     recording = false;
     paused = false;
+    captureOpen = false;
     clearInterval(anchorTimer);
+    clearInterval(attentionTimer);
+    clearTimeout(scrollPauseTimer);
+    renderHud();
     toggleBtn.disabled = true;
     toggleBtn.textContent = "● Record";
     toggleBtn.classList.remove("vp-recording");
@@ -534,7 +646,7 @@
         if (ev.stage === "_end") return port.disconnect();
         onEvent(ev);
       });
-      port.postMessage({ prRef: prUrl, sessionId, typedSegments: segments, timeline, ...(audio || {}) });
+      port.postMessage({ prRef: prUrl, sessionId, typedSegments: segments, timeline, audioStartMs, ...(audio || {}) });
     } catch (e) {
       line(`error: ${e.message}`, true);
     }
@@ -550,9 +662,9 @@
       }`,
     "project-ready": () => `repo registered with the orchestrator`,
     "work-filed": (d) => `filed work item ${d.id}`,
-    dispatching: (d) => `nudging the mayor to dispatch ${d.id}…`,
+    dispatching: (d) => `mailed the mayor to dispatch ${d.id}…`,
     "work-status": (d) => `work item ${d.id}: ${d.status}`,
-    "re-nudged": (d) => `re-nudged the mayor for ${d.id}`,
+    "re-signaled": (d) => `re-mailed dispatch-ready to the mayor for ${d.id}`,
     refinery: (d) => `refinery: ${d.status}`,
     commenting: () => `posting the intent trail on the PR…`,
   };
