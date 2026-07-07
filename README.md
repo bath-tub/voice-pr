@@ -13,7 +13,7 @@ work. Minutes later the PR has real commits.
   Chrome extension on the PR page
     ● record → scroll + talk → each chunk anchored to the viewport's file:line
         │  (+ auto-pull: Jira ticket, Slack threads, CI status)
-        ▼  POST /api/session
+        ▼  POST /api/dispatch
   local bridge (this Node server)  ──►  pogo orchestrator
         │                                 mayor → polecat (worktree) → refinery
         │                                 └─ commits merged onto the PR branch
@@ -21,9 +21,8 @@ work. Minutes later the PR has real commits.
   bridge posts the intent-trail comment on the PR after the merge
 ```
 
-There are **two front-ends** over the same bridge + orchestrator:
-1. **Chrome extension** (`extension/`) — the real UX, on the GitHub PR page. *Start here.*
-2. **Localhost page** (`public/`) — a paste-a-URL fallback for quick tests / no-extension use.
+The front-end is a **Chrome extension** (`extension/`) that lives on the GitHub
+PR page; the Node server is only a **local bridge** it talks to.
 
 The extension is a content script (`content.js`, the PR-page UI + viewport
 anchoring) plus a **background service worker** (`background.js`) that makes the
@@ -45,7 +44,7 @@ call, and session streaming all exercised end-to-end.
 | **Activation** | **Explicit** — click record in the extension, then scroll + talk. No always-on mic. |
 | **Anchoring** | **Auto from viewport** — each spoken chunk pins to the `file:line` centered on screen when you said it. Say "over in utils…" and the agent follows meaning over the anchor. |
 | **Context** | On session start the bridge detects the **Jira key** + **CI status**; the polecat pulls the **ticket** and **Slack** threads via its MCP tools at work-time. |
-| **Execution** | Via the **orchestrator** (mayor → polecat in a worktree → refinery merge onto the PR branch). Localhost fallback uses `claude` headless in an isolated clone. Never force-pushes, rebases, or amends. |
+| **Execution** | Via the **orchestrator** (mayor → polecat in a worktree → refinery merge onto the PR branch). Never force-pushes, rebases, or amends. |
 | **Safety net** | Everything lands as **commits you review before merge**; unclear work is surfaced as a comment, not guessed. |
 
 ## Quick start (Chrome extension)
@@ -103,9 +102,8 @@ the model via `VOICE_PR_WHISPER_MODEL`.
 - **Node ≥ 20** (bridge uses only built-ins — no `npm install`).
 - **`gh` CLI**, authenticated with push access to the target repo.
 - **`whisper-cli` + `ffmpeg`** + a GGML model (see above) for transcription.
-- A running **pogo orchestrator container** (`codingagent`) for the extension
-  path — see "orchestrator backend" below. (The localhost `direct` fallback
-  instead needs the **`claude` CLI** authenticated.)
+- A running **pogo orchestrator container** (`codingagent`) — see "orchestrator
+  backend" below.
 - **Chrome** for the extension + mic.
 
 ## Run
@@ -114,10 +112,10 @@ the model via `VOICE_PR_WHISPER_MODEL`.
 node server.js            # → http://localhost:4100  (set PORT to change)
 ```
 
-Open it in Chrome, paste your PR URL, hold **Space** (or click) and talk, edit
-the transcript if a word came out wrong, then hit **Address my feedback →**.
-Progress streams live, but the whole point is you can close the tab — it runs
-asynchronously and the PR updates in a few minutes.
+That's the bridge. Load the extension (see Quick start), open a PR's **Files
+changed** tab, record, and talk. Progress streams live in the PR-page panel, but
+the whole point is you can close the tab — it runs asynchronously and the PR
+updates in a few minutes.
 
 ### Try it against a throwaway PR
 
@@ -130,36 +128,27 @@ item so you can see the clarification path). Nothing real is touched.
 
 ## How it works
 
-1. **`server.js`** — dependency-free Node HTTP server. Serves the mic UI and
-   streams batch progress back as newline-delimited JSON.
-2. **`public/`** — the mic UI. `webkitSpeechRecognition` transcribes in-browser;
-   push-to-talk; the transcript is editable before you fire.
-3. **`lib/pipeline.js`** — one batch end-to-end: parse PR → `gh pr view/diff` →
-   clone the head branch into a temp dir → run `claude -p` there → read the
-   agent's manifest → verify the commits → `git push` → post anchored comments
-   (+ one clarification comment) via `gh`.
-4. **`lib/prompt.js`** — instructs the agent to segment the transcript,
-   confidence-gate each item, make one commit per confident item, and write a
-   strict JSON manifest (`file`, `line`, `commitSha`, `rationale`, or a
-   `clarification` for low-confidence items).
-5. **`lib/github.js`** — PR parsing + `gh` operations. Inline review comments
-   fall back to a plain PR comment if a line isn't part of the diff hunk.
+1. **`server.js`** — dependency-free Node HTTP bridge. Exposes the four
+   endpoints the extension calls (`/api/context`, `/api/preflight`,
+   `/api/transcribe`, `/api/dispatch`) and streams session progress back as
+   newline-delimited JSON. `/api/dispatch` transcribes the recording and runs the
+   session end-to-end server-side, so it completes even if you close the tab.
+2. **`extension/`** — the PR-page UI (`content.js`), viewport anchoring
+   (`anchors.js`), gaze overlay (`gaze.js`), and the bridge-calling service
+   worker (`background.js`).
+3. **`lib/pipeline.js`** — `runSession`: parse PR → `gh pr view` → detect the
+   Jira key + CI status → build the orchestrator work-item body → file it and
+   track it to a merge → post the anchored intent-trail comment via `gh`.
+4. **`lib/prompt.js`** — `buildSessionBody`: instructs the polecat to segment the
+   anchored comments, confidence-gate each one, make one commit per confident
+   item, and leave anything too vague for a clarification note.
+5. **`lib/github.js`** — PR parsing + `gh` operations.
 
-## Two backends
+## Orchestrator backend
 
-voice-pr can execute a batch in one of two ways, selected by `VOICE_PR_BACKEND`:
-
-### `direct` (default)
-Runs `claude -p` in an isolated clone on the host, commits per item, pushes,
-and posts the anchored comments itself. Before pushing, it runs
-`VOICE_PR_VERIFY_CMD` when set; otherwise it runs root `build.sh` and `test.sh`
-when present. If no verification command is available, the direct backend fails
-before pushing so unverified agent commits do not land silently.
-
-### `orchestrator` — ports voice-pr into the containerized pogo loop
-Instead of running the agent itself, voice-pr becomes a **producer of work
-items** for a locally running pogo orchestrator container (mayor → polecat →
-refinery). The adapter (`lib/orchestrator.js`, transport = `docker exec`):
+voice-pr is a **producer of work items** for a locally running pogo orchestrator
+container (mayor → polecat → refinery). The adapter (`lib/orchestrator.js`,
+transport = `docker exec`):
 
 1. **Clones** the PR's repo into the container workspace on the head branch and
    registers it (`pogo project add`).
@@ -172,15 +161,12 @@ refinery). The adapter (`lib/orchestrator.js`, transport = `docker exec`):
    claim → commit → refinery gates → fast-forward merge, emitting the same
    progress-event shape the UI already renders.
 
-The work-item body (`buildOrchestratorBody`) carries the voice-pr conventions
-into the polecat: segment the transcript, confidence-gate, one commit per
-confident item, and — after merge — post the anchored intent-trail comments and
-a clarification comment for anything too vague. The polecat template already
-owns the claim / commit / `refinery submit` / done protocol.
-
-```bash
-VOICE_PR_BACKEND=orchestrator PORT=4100 node server.js
-```
+The work-item body (`buildSessionBody`) carries the voice-pr conventions into the
+polecat: segment the anchored comments, confidence-gate, one commit per confident
+item, and call out anything too vague as needing clarification. The voice-pr
+bridge posts the intent-trail comment on the PR after it observes the merge (the
+polecat can't — pogod reaps it the moment the merge lands). The polecat template
+already owns the claim / commit / `refinery submit` / done protocol.
 
 **Orchestrator credential note (operational):** the pogo container's Claude auth
 is wired in at `docker run` time (an OAuth token copied into a bind-mounted
@@ -196,10 +182,6 @@ file, or `ANTHROPIC_API_KEY`). OAuth tokens expire — if the mayor/polecats log
 | Env | Default | Meaning |
 |---|---|---|
 | `PORT` | `4100` | HTTP port |
-| `VOICE_PR_BACKEND` | `direct` | `direct` (host `claude -p`) or `orchestrator` (pogo loop) |
-| `VOICE_PR_MODEL` | `claude-sonnet-5` | model for the headless agent (direct backend) |
-| `VOICE_PR_TIMEOUT_MS` | `360000` | agent timeout per batch (direct backend) |
-| `VOICE_PR_VERIFY_CMD` | unset | shell command run in the PR checkout before direct-backend push; overrides `build.sh`/`test.sh` discovery |
 | `VOICE_PR_CONTAINER` | `codingagent` | orchestrator container name |
 | `VOICE_PR_WORKSPACE` | `/home/pogo/workspace` | repo checkout root inside the container |
 | `VOICE_PR_DISPATCH_MS` | `720000` | how long to track a work item before returning |
@@ -223,13 +205,10 @@ recording, its transcript, and the orchestrator run it produced.
 - **Same-repo PRs only** — fork/cross-repo head branches are rejected (would
   need a remote-add + push-to-fork path).
 - **Confidence ≠ correctness.** The agent can be confidently wrong; the backstop
-  is that everything is a reviewable commit, never an auto-merge. The direct
-  backend also verifies committed changes before pushing, but review remains the
-  final safety check.
-- **No concurrency control** — fire a second batch before the first finishes and
-  two agents race on the same branch. Real version needs a per-branch queue.
-- **Browser speech only** — Web Speech API (Chrome). A server-side transcription
-  path (e.g. Whisper) would make it browser-agnostic.
+  is that everything is a reviewable commit, never an auto-merge. The refinery
+  gates the commits before merge, but review remains the final safety check.
+- **No concurrency control** — fire a second session before the first finishes and
+  two work items race on the same branch. Real version needs a per-branch queue.
 - **One commit per item** assumes items are independent; overlapping edits to the
   same lines aren't ordered.
 - **Extension anchoring targets GitHub's current diff DOM** — if the mic is

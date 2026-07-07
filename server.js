@@ -1,24 +1,15 @@
 #!/usr/bin/env node
-// voice-pr — local service. Serves the mic UI and streams batch progress.
+// voice-pr — local bridge for the Chrome extension. The content script can't
+// fetch localhost directly, so the extension's background worker proxies to
+// these endpoints, which transcribe locally and dispatch to the orchestrator.
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { dirname, join, extname } from "node:path";
-import { runBatch, runSession, getContext } from "./lib/pipeline.js";
+import { runSession, getContext } from "./lib/pipeline.js";
 import { transcribe, anchorSegments, checkStt } from "./lib/transcribe.js";
 import { checkOrchestrator } from "./lib/orchestrator.js";
 import { run } from "./lib/exec.js";
-import { saveAudio, saveJson, ARCHIVE_ROOT } from "./lib/archive.js";
+import { saveAudio, saveJson } from "./lib/archive.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PUBLIC = join(__dirname, "public");
 const PORT = Number(process.env.PORT || 4100);
-
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-};
 
 // The Chrome extension calls these endpoints from the github.com origin, so
 // every response is CORS-open and preflights are answered.
@@ -44,12 +35,7 @@ const server = createServer(async (req, res) => {
       return await handleTranscribe(req, res);
     if (req.method === "POST" && url.pathname === "/api/dispatch")
       return await handleDispatch(req, res);
-    if (req.method === "POST" && url.pathname === "/api/session")
-      return await handleStream(req, res, (input, send) => runSession(input, send));
-    if (req.method === "POST" && url.pathname === "/api/batch")
-      return await handleStream(req, res, (input, send) => runBatch(input, send));
-    if (req.method === "GET") return await serveStatic(req, res);
-    res.writeHead(405).end("method not allowed");
+    res.writeHead(404).end("not found");
   } catch (e) {
     if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
     res.end(`error: ${e.message}`);
@@ -196,72 +182,6 @@ async function handleContext(url, res) {
   }
 }
 
-async function serveStatic(req, res) {
-  const rel = req.url === "/" ? "/index.html" : req.url.split("?")[0];
-  const path = join(PUBLIC, rel);
-  if (!path.startsWith(PUBLIC)) return res.writeHead(403).end("forbidden");
-  try {
-    const body = await readFile(path);
-    res.writeHead(200, { "content-type": MIME[extname(path)] || "application/octet-stream" });
-    res.end(body);
-  } catch {
-    res.writeHead(404).end("not found");
-  }
-}
-
-async function handleStream(req, res, runner) {
-  const body = await readBody(req);
-  const input = JSON.parse(body || "{}");
-
-  // Stream progress as newline-delimited JSON so the client can render it live.
-  res.writeHead(200, {
-    "content-type": "application/x-ndjson",
-    "cache-control": "no-cache",
-    "x-accel-buffering": "no",
-  });
-  res.on("error", () => {});
-  const t0 = Date.now();
-  const events = [];
-  const send = (stage, detail) => {
-    events.push({ stage, detail, t: Math.round((Date.now() - t0) / 1000) });
-    if (res.writableEnded || res.destroyed) return;
-    res.write(JSON.stringify({ stage, detail, t: Math.round((Date.now() - t0) / 1000) }) + "\n");
-  };
-
-  let result = null,
-    err = null;
-  try {
-    console.log(
-      `[req] PR=${input.prRef} ${input.segments ? `${input.segments.length} segments` : "transcript"}`
-    );
-    result = await runner(input, send);
-    send("result", result);
-    console.log(
-      result.backend === "orchestrator"
-        ? `[req] orchestrator: work item ${result.workItemId} -> ${result.status}`
-        : `[req] done: ${result.committed.length} committed`
-    );
-  } catch (e) {
-    err = e.message;
-    console.error(`[req] error: ${e.message}`);
-    send("error", { message: e.message });
-  } finally {
-    // archive the whole session (input + every event + result) as a fixture
-    if (input.sessionId) {
-      await saveJson(input.sessionId, "session.json", {
-        at: new Date().toISOString(),
-        prRef: input.prRef,
-        segments: input.segments || null,
-        transcript: (input.segments || []).map((s) => s.text).join(" "),
-        result,
-        error: err,
-        events,
-      }).catch(() => {});
-    }
-    res.end();
-  }
-}
-
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let b = "";
@@ -293,6 +213,6 @@ server.on("error", (e) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  🎙️  voice-pr running → http://localhost:${PORT}\n`);
-  console.log("  Open it in Chrome, paste a PR URL, hold the button, talk.\n");
+  console.log(`\n  🎙️  voice-pr bridge running → http://localhost:${PORT}\n`);
+  console.log("  Load the extension, open a PR's Files changed tab, and talk.\n");
 });
