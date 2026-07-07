@@ -99,6 +99,8 @@
 }
 .vp-dbgrow { color: var(--vp-muted); padding: 1px 0; }
 .vp-dbgrow:first-child { color: var(--vp-accent); } /* newest */
+.vp-preflight-row { transition: color 0.15s ease; } /* ticks from pending → ✓/✗ in place */
+.vp-preflight-row.ok { color: var(--vp-accent); }
 .vp-context {
   padding: 8px 12px;
   color: var(--vp-muted);

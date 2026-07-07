@@ -31,17 +31,18 @@
     attentionTimer = null,
     hudFeed = [];
   const HUD_FEED_MAX = 8;
-  // Interaction tracking — every mouse/scroll-derived attention signal: hover
-  // (move/dwell), scroll (viewport sampling/scroll-pause/revisit), and pointer
-  // (click/select/copy). Off by default: they fire constantly and anchor spoken
-  // comments to wherever the pointer/viewport drifted, which the orchestrator
-  // then misreads as intended context. When off, your voice drives the review
-  // and the viewport is the only fallback anchor. Single toggle in the header.
+  // Developer view (off by default) — one switch for the whole diagnostic
+  // surface: mouse/scroll attention tracking, the live capture feed + "most
+  // attended" HUD, the gaze tracker, and the bridge→whisper→gh→orchestrator
+  // preflight. Default (off) is a clean, voice-only panel: no passive signals
+  // fire, so nothing misanchors your spoken comments and the viewport is the
+  // only fallback anchor. TRACKED_SRCS are the mouse/scroll-derived signals
+  // dropped while dev view is off.
   const TRACKED_SRCS = new Set(["move", "dwell", "scroll", "scroll-pause", "revisit", "click", "select", "copy"]);
-  let trackOn = localStorage.getItem("voicepr:tracking") === "1";
+  let devOn = localStorage.getItem("voicepr:dev") === "1";
   function pushTimeline(src = "scroll", anchor) {
     if (!captureOpen || !sessionStart) return;
-    if (!trackOn && TRACKED_SRCS.has(src)) return;
+    if (!devOn && TRACKED_SRCS.has(src)) return;
     const a = anchor || anchorNow();
     timeline.push({ t: Date.now() - sessionStart, src, ...a });
     debugLine(a, src);
@@ -82,20 +83,20 @@
     };
   }
   document.addEventListener("mouseup", () => {
-    if (!trackOn) return; // pointer tracking is opt-in
+    if (!devOn) return; // pointer tracking is opt-in
     const s = selAnchor();
     if (s) lastSel = { ...s, ts: Date.now() };
     pushTimeline(s ? "select" : "click");
   });
   document.addEventListener("mousedown", (e) => {
-    if (!trackOn) return; // pointer tracking is opt-in
+    if (!devOn) return; // pointer tracking is opt-in
     const file = fileOf(e.target),
       line = lineOf(e.target);
     if (file && line != null) lastClick = { file, line, ts: Date.now() };
     pushTimeline("click");
   });
   document.addEventListener("copy", () => {
-    if (!captureOpen || !trackOn) return;
+    if (!captureOpen || !devOn) return;
     const s = selAnchor();
     if (s) pushTimeline("copy", s);
   });
@@ -131,7 +132,7 @@
     moveThrottle = 0,
     dwellTimer = null;
   document.addEventListener("mousemove", (e) => {
-    if (!captureOpen || !trackOn) return; // hover tracking is opt-in
+    if (!captureOpen || !devOn) return; // hover tracking is opt-in
     const now = Date.now();
     laserPaint(e.clientX, e.clientY);
     if (now - moveThrottle < 120) return;
@@ -160,7 +161,7 @@
   // (which don't bubble "scroll") are still caught.
   let scrollPauseTimer = null;
   function onScroll() {
-    if (!captureOpen || !trackOn) return; // scroll tracking is opt-in
+    if (!captureOpen || !devOn) return; // scroll tracking is opt-in
     clearTimeout(scrollPauseTimer);
     scrollPauseTimer = setTimeout(() => {
       if (!captureOpen) return;
@@ -176,7 +177,7 @@
   // attention). With tracking off, the viewport is the only anchor — the mouse
   // never steers where a spoken comment lands.
   function anchorNow() {
-    if (trackOn) {
+    if (devOn) {
       const live = selAnchor();
       if (live) return { ...live, via: "select" };
       const cands = [lastSel, lastClick, lastHover].filter(
@@ -205,10 +206,8 @@
       <div class="vp-head">
         <span class="vp-title">🎙️ voice-pr</span>
         <span class="vp-head-right">
-          <button id="vp-track-btn" class="vp-dbg" title="track mouse + scroll as attention signals — hover, scroll, click, select, copy (off by default; keeps spoken comments from being misanchored to pointer/scroll drift)">🖱️ tracking</button>
-          <button id="vp-gaze-btn" class="vp-dbg" title="experimental: on-device webcam eye tracking (video never leaves your machine)">👁 gaze</button>
-          <button id="vp-preflight-btn" class="vp-dbg" title="end-to-end check: bridge → whisper → gh → orchestrator, before you record" hidden>✓ check</button>
-          <button id="vp-debug-btn" class="vp-dbg" title="show what's being captured as you talk">🐛 debug</button>
+          <button id="vp-gaze-btn" class="vp-dbg" title="experimental: on-device webcam eye tracking (video never leaves your machine)" hidden>👁 gaze</button>
+          <button id="vp-dev-btn" class="vp-dbg" title="developer view — mouse/scroll attention tracking, the live capture feed + most-attended HUD, and the bridge→whisper→gh→orchestrator preflight (off by default; default is a clean voice-only panel)">🔧 dev</button>
           <button id="vp-close" class="vp-x">✕</button>
         </span>
       </div>
@@ -263,9 +262,7 @@
     ctxEl = $("#vp-context"),
     lookingEl = $("#vp-looking"),
     debugEl = $("#vp-debug"),
-    debugBtn = $("#vp-debug-btn"),
-    preflightBtn = $("#vp-preflight-btn"),
-    trackBtn = $("#vp-track-btn"),
+    devBtn = $("#vp-dev-btn"),
     gazeBtn = $("#vp-gaze-btn"),
     toggleBtn = $("#vp-toggle"),
     sendBtn = $("#vp-send"),
@@ -291,8 +288,8 @@
     revisit: "↩️",
   };
   function renderHud() {
-    hudEl.hidden = !captureOpen;
-    if (!captureOpen) return;
+    hudEl.hidden = !(captureOpen && devOn);
+    if (!captureOpen || !devOn) return;
     hudPulseEl.classList.toggle("vp-pulse-live", captureOpen);
     hudAnchorEl.textContent = fmtAnchor(anchorNow());
 
@@ -384,7 +381,7 @@
     }, 1000);
     renderHud();
     start();
-    if (debugOn) runPreflight(); // opened with debug on → verify the chain
+    if (devOn) runPreflight(); // opened in dev view → verify the chain up front
   });
   $("#vp-close").addEventListener("click", () => {
     teardown(); // closing cancels the current session; reopening starts fresh
@@ -392,18 +389,15 @@
     pill.hidden = false;
   });
 
-  // ---------- debug: show what's being captured as you talk -------------------
-  let debugOn = localStorage.getItem("voicepr:debug") === "1";
-  function applyDebug() {
-    debugEl.hidden = !debugOn;
-    debugBtn.classList.toggle("on", debugOn);
-    preflightBtn.hidden = !debugOn; // the end-to-end check lives with debug
-  }
-
-  // End-to-end preflight: verify the whole dispatch chain is live BEFORE you
-  // start talking, so you never record into a dead bridge. Renders a checklist
-  // in the debug panel.
+  // ---------- end-to-end preflight (part of dev view) -------------------------
+  // Verify the whole dispatch chain is live BEFORE you start talking, so you
+  // never record into a dead bridge. The full checklist is rendered UP FRONT —
+  // every stage present and pending — then each row ticks from ✗ to ✓ in place
+  // as results come back, so nothing pops in one at a time.
+  const PREFLIGHT_STAGES = ["bridge", "ffmpeg", "whisper", "whisper model", "gh auth", "orchestrator"];
+  const TICK_MS = 120; // stagger between rows resolving, for a staged feel
   async function runPreflight() {
+    if (!devOn) return;
     debugEl.hidden = false;
     let box = debugEl.querySelector(".vp-preflight");
     if (!box) {
@@ -411,38 +405,51 @@
       box.className = "vp-preflight";
       debugEl.prepend(box);
     }
-    box.innerHTML = `<div class="vp-dbgrow">⏳ preflight: bridge → whisper → gh → orchestrator…</div>`;
+    box.innerHTML = "";
+    const head = document.createElement("div");
+    head.className = "vp-dbgrow";
+    head.innerHTML = "<b>⏳ preflight — bridge → whisper → gh → orchestrator</b>";
+    box.appendChild(head);
+    const rows = new Map();
+    for (const name of PREFLIGHT_STAGES) {
+      const row = document.createElement("div");
+      row.className = "vp-dbgrow vp-preflight-row";
+      row.textContent = `◌ ${name} — checking…`;
+      box.appendChild(row);
+      rows.set(name, row);
+    }
+    const setRow = (name, ok, detail) => {
+      const row = rows.get(name);
+      if (!row) return;
+      row.className = `vp-dbgrow vp-preflight-row ${ok ? "ok" : "vp-warn"}`;
+      row.textContent = `${ok ? "✓" : "✗"} ${name}${detail ? ` — ${detail}` : ""}`;
+    };
     let resp;
     try {
-      resp = await new Promise((resolve) =>
-        chrome.runtime.sendMessage({ type: "preflight" }, resolve)
-      );
+      resp = await new Promise((resolve) => chrome.runtime.sendMessage({ type: "preflight" }, resolve));
     } catch (e) {
       resp = { ok: false, error: String(e) };
     }
     if (!resp || !resp.ok || !resp.json) {
-      box.innerHTML = `<div class="vp-dbgrow vp-warn">✗ bridge not reachable — start it with <code>npm run serve</code>${
-        resp?.error ? ` (${escapeHtml(resp.error)})` : ""
-      }</div>`;
+      const why = resp?.error ? ` (${resp.error})` : "";
+      PREFLIGHT_STAGES.forEach((name, i) =>
+        setTimeout(() => setRow(name, false, i === 0 ? `not reachable — start it with npm run serve${why}` : "bridge down"), i * TICK_MS)
+      );
+      head.innerHTML = "<b>✗ not ready — start the bridge (npm run serve)</b>";
       return;
     }
-    const { ok, checks } = resp.json;
-    box.innerHTML =
-      `<div class="vp-dbgrow"><b>${
-        ok ? "✅ ready — everything's up, start recording" : "⚠️ not ready — fix the ✗ items first"
-      }</b></div>` +
-      checks
-        .map(
-          (c) =>
-            `<div class="vp-dbgrow ${c.ok ? "" : "vp-warn"}">${c.ok ? "✓" : "✗"} ${escapeHtml(
-              c.name
-            )} — ${escapeHtml(c.detail || "")}</div>`
-        )
-        .join("");
+    const byName = Object.fromEntries(resp.json.checks.map((c) => [c.name, c]));
+    PREFLIGHT_STAGES.forEach((name, i) =>
+      setTimeout(() => {
+        const c = byName[name];
+        setRow(name, !!(c && c.ok), c ? c.detail || "" : "no result");
+        if (i === PREFLIGHT_STAGES.length - 1)
+          head.innerHTML = `<b>${resp.json.ok ? "✅ ready — start recording" : "⚠️ not ready — fix the ✗ items"}</b>`;
+      }, i * TICK_MS)
+    );
   }
-  preflightBtn.addEventListener("click", runPreflight);
   function debugLine(a, src) {
-    if (!debugOn) return;
+    if (!devOn) return;
     const secs = Math.floor((Date.now() - sessionStart) / 1000);
     const row = document.createElement("div");
     row.className = "vp-dbgrow";
@@ -450,28 +457,6 @@
     debugEl.prepend(row);
     while (debugEl.childElementCount > 40) debugEl.lastElementChild.remove();
   }
-  debugBtn.addEventListener("click", () => {
-    debugOn = !debugOn;
-    localStorage.setItem("voicepr:debug", debugOn ? "1" : "0");
-    applyDebug();
-    if (debugOn) runPreflight(); // turning on debug = "check everything now"
-  });
-  applyDebug();
-
-  // ---------- interaction tracking toggle (off by default) --------------------
-  // One switch for all mouse/scroll attention signals (hover, scroll, click,
-  // select, copy). Off = voice-only, viewport is the sole anchor.
-  function applyTrack() {
-    trackBtn.classList.toggle("on", trackOn);
-  }
-  trackBtn.addEventListener("click", () => {
-    trackOn = !trackOn;
-    localStorage.setItem("voicepr:tracking", trackOn ? "1" : "0");
-    applyTrack();
-    if (!trackOn) laser.style.display = "none"; // clear the hover highlight
-  });
-  applyTrack();
-
   // ---------- gaze: experimental on-device webcam eye tracking ----------------
   // WebGazer runs in an extension-origin iframe so GitHub's page CSP and camera
   // origin do not own the webcam/model execution path. The content script only
@@ -580,6 +565,28 @@
     gazeOn = true;
     startGaze();
   });
+
+  // ---------- developer view: one switch for the whole diagnostic surface -----
+  // Reveals + enables attention tracking, the live capture feed + "most
+  // attended" HUD, the gaze button, and the preflight checklist. Off by default
+  // → a clean, voice-only panel. Defined after gaze so it can stop it on hide.
+  function applyDev() {
+    devBtn.classList.toggle("on", devOn);
+    gazeBtn.hidden = !devOn;
+    debugEl.hidden = !devOn;
+    if (!devOn) {
+      laser.style.display = "none";
+      if (gazeOn) stopGaze();
+    }
+    renderHud();
+  }
+  devBtn.addEventListener("click", () => {
+    devOn = !devOn;
+    localStorage.setItem("voicepr:dev", devOn ? "1" : "0");
+    applyDev();
+    if (devOn && captureOpen) runPreflight(); // turning on = check the chain now
+  });
+  applyDev();
 
   // ---------- context chip (via the background worker) ------------------------
   // The content script can't hit localhost directly (Chrome blocks the loopback
