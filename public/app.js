@@ -152,6 +152,9 @@ const STAGE_TEXT = {
   commenting: (d) => `commenting on ${d.file}:${d.line}…`,
   clarifying: (d) => `noting ${d.count} unclear item(s) for you…`,
   // orchestrator backend
+  "branch-queued": (d) =>
+    `waiting for earlier voice-pr dispatches on ${d.branch} (queue position ${d.position})`,
+  "branch-dispatch-start": (d) => `branch queue ready for ${d.branch}`,
   "project-ready": (d) => `repo registered with the orchestrator (${d.path})`,
   "work-filed": (d) => `filed work item ${d.id} into the orchestrator`,
   dispatching: (d) => `mailed the mayor to dispatch work item ${d.id}…`,

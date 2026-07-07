@@ -808,6 +808,9 @@
       `context: ${d.segments} comments${d.jiraKey ? `, ticket ${d.jiraKey}` : ""}${
         d.checksSummary ? `, ${d.checksSummary}` : ""
       }`,
+    "branch-queued": (d) =>
+      `waiting for earlier voice-pr dispatches on ${d.branch} (queue position ${d.position})`,
+    "branch-dispatch-start": (d) => `branch queue ready for ${d.branch}`,
     "project-ready": () => `repo registered with the orchestrator`,
     "work-filed": (d) => `filed work item ${d.id}`,
     dispatching: (d) => `mailed the mayor to dispatch ${d.id}…`,
