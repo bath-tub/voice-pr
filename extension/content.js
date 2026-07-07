@@ -203,33 +203,37 @@
   root.innerHTML = `
     <button id="vp-pill" class="vp-pill">🎙️ Review with voice</button>
     <div id="vp-panel" class="vp-panel" hidden>
-      <div class="vp-head">
-        <span class="vp-title">🎙️ voice-pr</span>
-        <span class="vp-head-right">
-          <button id="vp-gaze-btn" class="vp-dbg" title="experimental: on-device webcam eye tracking (video never leaves your machine)" hidden>👁 gaze</button>
-          <button id="vp-dev-btn" class="vp-dbg" title="developer view — mouse/scroll attention tracking, the live capture feed + most-attended HUD, and the bridge→whisper→gh→orchestrator preflight (off by default; default is a clean voice-only panel)">🔧 dev</button>
-          <button id="vp-close" class="vp-x">✕</button>
-        </span>
-      </div>
-      <div id="vp-context" class="vp-context">PR #${m[3]}</div>
-      <div id="vp-looking" class="vp-looking"></div>
-      <div id="vp-hud" class="vp-hud" hidden>
-        <div class="vp-hud-current">
-          <span id="vp-hud-pulse" class="vp-pulse"></span>
-          <span id="vp-hud-anchor" class="vp-hud-anchor">—</span>
-        </div>
-        <ol id="vp-hud-feed" class="vp-hud-feed"></ol>
-        <div class="vp-hud-top">
-          <div class="vp-hud-top-label">Most attended</div>
-          <ol id="vp-hud-topn" class="vp-hud-topn"></ol>
-        </div>
-      </div>
-      <div id="vp-debug" class="vp-debug" hidden></div>
-      <div class="vp-actions">
-        <button id="vp-toggle" class="vp-rec">● Record</button>
+      <header class="vp-bar">
+        <button id="vp-toggle" class="vp-rec" title="Start / pause recording">⏺</button>
+        <span id="vp-clock" class="vp-clock">0:00</span>
+        <span class="vp-bar-gap"></span>
         <button id="vp-send" class="vp-send" disabled>Dispatch →</button>
+        <div class="vp-menu-wrap">
+          <button id="vp-menu-btn" class="vp-icon" title="More" aria-haspopup="true" aria-expanded="false">⋯</button>
+          <div id="vp-menu" class="vp-menu" role="menu" hidden>
+            <button id="vp-dev-btn" class="vp-menu-item" role="menuitemcheckbox" title="developer view — mouse/scroll attention tracking, the live capture feed + most-attended HUD, and the bridge→whisper→gh→orchestrator preflight (off by default; default is a clean voice-only panel)">🔧 Developer view</button>
+            <button id="vp-gaze-btn" class="vp-menu-item" role="menuitemcheckbox" title="experimental: on-device webcam eye tracking (video never leaves your machine)" hidden>👁 Eye tracking</button>
+          </div>
+        </div>
+        <button id="vp-close" class="vp-icon vp-x" title="Close">✕</button>
+      </header>
+      <div id="vp-context" class="vp-context"></div>
+      <div class="vp-body">
+        <div id="vp-looking" class="vp-looking vp-now" aria-live="polite"></div>
+        <div id="vp-status" class="vp-log" role="log" aria-live="polite"></div>
+        <div id="vp-hud" class="vp-hud" hidden>
+          <div class="vp-hud-current">
+            <span id="vp-hud-pulse" class="vp-pulse"></span>
+            <span id="vp-hud-anchor" class="vp-hud-anchor">—</span>
+          </div>
+          <ol id="vp-hud-feed" class="vp-hud-feed"></ol>
+          <div class="vp-hud-top">
+            <div class="vp-hud-top-label">Most attended</div>
+            <ol id="vp-hud-topn" class="vp-hud-topn"></ol>
+          </div>
+        </div>
+        <div id="vp-debug" class="vp-debug" hidden></div>
       </div>
-      <div id="vp-status" class="vp-status" hidden></div>
     </div>`;
   document.body.appendChild(root);
 
@@ -266,12 +270,96 @@
     gazeBtn = $("#vp-gaze-btn"),
     toggleBtn = $("#vp-toggle"),
     sendBtn = $("#vp-send"),
+    clockEl = $("#vp-clock"),
+    menuBtn = $("#vp-menu-btn"),
+    menuEl = $("#vp-menu"),
     statusEl = $("#vp-status"),
     hudEl = $("#vp-hud"),
     hudPulseEl = $("#vp-hud-pulse"),
     hudAnchorEl = $("#vp-hud-anchor"),
     hudFeedEl = $("#vp-hud-feed"),
     hudTopEl = $("#vp-hud-topn");
+
+  // ---------- overflow menu (holds dev + gaze) --------------------------------
+  function closeMenu() {
+    menuEl.hidden = true;
+    menuBtn.setAttribute("aria-expanded", "false");
+  }
+  menuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const opening = menuEl.hidden;
+    menuEl.hidden = !opening;
+    menuBtn.setAttribute("aria-expanded", String(opening));
+  });
+  document.addEventListener("click", (e) => {
+    if (!menuEl.hidden && !menuEl.contains(e.target) && e.target !== menuBtn) closeMenu();
+  });
+
+  // ---------- context strip: chips (badges) -----------------------------------
+  const chip = (text, cls = "") =>
+    `<span class="vp-chip${cls ? " " + cls : ""}">${escapeHtml(text)}</span>`;
+  function setContextChips() {
+    ctxEl.innerHTML = chip("🎙 voice-pr", "brand") + chip(`PR #${m[3]}`);
+  }
+
+  // ---------- control-bar clock ----------------------------------------------
+  const fmtClock = (ms) => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+  function updateClock() {
+    if (!clockEl) return;
+    if (recording) clockEl.textContent = fmtClock(Date.now() - recStart);
+    else if (!paused) clockEl.textContent = "0:00";
+    clockEl.classList.toggle("live", recording);
+  }
+
+  // ---------- unified log feed (captured anchors → dispatch progress) ---------
+  // The log is the panel's spine: while recording it shows the anchor trail;
+  // after dispatch the same feed streams orchestrator progress. Auto-follows the
+  // newest row (shadcn MessageScroller idea) and caps its length.
+  const LOG_MAX = 80;
+  function clearEmpty() {
+    statusEl.querySelector(".vp-empty")?.remove();
+  }
+  function logRow(text, { cls = "", ts = null } = {}) {
+    clearEmpty();
+    const row = document.createElement("div");
+    row.className = "vp-logrow" + (cls ? " " + cls : "");
+    if (ts != null) {
+      const t = document.createElement("span");
+      t.className = "vp-ts";
+      t.textContent = fmtClock(ts);
+      row.appendChild(t);
+    }
+    const span = document.createElement("span");
+    span.className = "vp-logtext";
+    span.textContent = text;
+    row.appendChild(span);
+    statusEl.appendChild(row);
+    while (statusEl.childElementCount > LOG_MAX) statusEl.firstElementChild.remove();
+    statusEl.scrollTop = statusEl.scrollHeight;
+    return row;
+  }
+  function logEmpty(text) {
+    statusEl.innerHTML = "";
+    const d = document.createElement("div");
+    d.className = "vp-empty";
+    d.textContent = text;
+    statusEl.appendChild(d);
+  }
+  // Display-only viewport trail: append a row when the viewport file:line changes
+  // while recording. This never touches the anchoring `timeline` — it just makes
+  // visible what you were reading as you talked.
+  let lastTrailKey = "";
+  function logTrail() {
+    if (!recording) return;
+    const v = anchorViewport();
+    const key = v.file ? `${v.file}:${v.line ?? ""}` : "";
+    if (!key || key === lastTrailKey) return;
+    lastTrailKey = key;
+    logRow(`◎ ${fmtAnchor(v)}`, { cls: "trail", ts: Date.now() - recStart });
+  }
 
   // ---------- live attention HUD: always visible while a session is open -----
   const SIGNAL_ICON = {
@@ -349,15 +437,20 @@
     renderHud();
   }
   function resetUI() {
-    statusEl.hidden = true;
     statusEl.innerHTML = "";
     lookingEl.textContent = "";
     debugEl.innerHTML = "";
-    ctxEl.textContent = `PR #${m[3]}`;
+    setContextChips();
+    lastTrailKey = "";
+    if (clockEl) {
+      clockEl.textContent = "0:00";
+      clockEl.classList.remove("live");
+    }
+    closeMenu();
     sendBtn.disabled = false;
     sendBtn.textContent = "Dispatch →";
     toggleBtn.disabled = false;
-    toggleBtn.textContent = "● Record";
+    toggleBtn.textContent = "⏺";
     toggleBtn.classList.remove("vp-recording");
   }
 
@@ -365,6 +458,7 @@
   pill.addEventListener("click", () => {
     teardown();
     resetUI();
+    logEmpty("scroll the diff and talk — the file:line you're reading shows up here.");
     sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     sessionStart = Date.now();
     captureOpen = true;
@@ -374,6 +468,7 @@
     paintLooking();
     pushTimeline("open");
     attentionTimer = setInterval(() => {
+      updateClock();
       const v = anchorViewport();
       const info = attention.tick(v);
       if (info.revisit) pushTimeline("revisit", { ...v, via: "viewport", weight: attention.weightOf(v) });
@@ -592,34 +687,29 @@
   // The content script can't hit localhost directly (Chrome blocks the loopback
   // address space); the background service worker makes the bridge calls.
   function loadContext() {
-    ctxEl.textContent = "loading context…";
+    ctxEl.innerHTML = chip("🎙 voice-pr", "brand") + chip("loading context…");
     chrome.runtime.sendMessage({ type: "context", prUrl }, (res) => {
       if (!res || !res.ok || res.json?.error) {
-        ctxEl.innerHTML = `<span class="vp-warn">bridge not reachable — is the voice-pr server running on ${BRIDGE}?</span>`;
+        ctxEl.innerHTML =
+          chip("🎙 voice-pr", "brand") +
+          chip(`bridge not reachable — is the server running on ${BRIDGE}?`, "vp-warn");
         return;
       }
       const c = res.json;
-      const bits = [`PR #${c.pr.number}`, c.pr.branch];
-      if (c.jiraKey) bits.push(`🎫 ${c.jiraKey}`);
-      if (c.checksSummary) bits.push(`✔︎ ${c.checksSummary}`);
-      ctxEl.textContent = bits.join("  ·  ");
+      const bits = [chip("🎙 voice-pr", "brand"), chip(`PR #${c.pr.number}`), chip(c.pr.branch)];
+      if (c.jiraKey) bits.push(chip(`🎫 ${c.jiraKey}`, "tk"));
+      if (c.checksSummary) bits.push(chip(`✔︎ ${c.checksSummary}`, "ok"));
+      ctxEl.innerHTML = bits.join("");
     });
   }
 
   // ---------- audio recording ------------------------------------------------
+  // The now-line is the live anchor readout (the clock/red state lives in the
+  // bar, so it isn't duplicated here).
   function paintLooking() {
     if (paused) return (lookingEl.innerHTML = `<span class="vp-dim">⏸ paused</span>`);
     if (!captureOpen) return (lookingEl.textContent = "");
-    if (!recording) {
-      lookingEl.innerHTML = `<span class="vp-dim">capturing attention · pointing at ${escapeHtml(
-        fmtAnchor(anchorNow())
-      )}</span>`;
-      return;
-    }
-    const secs = Math.floor((Date.now() - recStart) / 1000);
-    lookingEl.innerHTML = `<span class="vp-dim">🔴 recording ${Math.floor(secs / 60)}:${String(
-      secs % 60
-    ).padStart(2, "0")} · pointing at ${escapeHtml(fmtAnchor(anchorNow()))}</span>`;
+    lookingEl.innerHTML = `<span class="vp-dim">◎ pointing at</span> ${escapeHtml(fmtAnchor(anchorNow()))}`;
   }
   function mimeType() {
     for (const t of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"])
@@ -631,7 +721,7 @@
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      lookingEl.innerHTML = `<span class="vp-warn">mic blocked — allow it (🔒 in the address bar) or just type comments</span>`;
+      lookingEl.innerHTML = `<span class="vp-warn">mic blocked — allow it (🔒 in the address bar), then reopen the panel</span>`;
       sendBtn.disabled = false; // can still dispatch typed comments
       return;
     }
@@ -642,11 +732,14 @@
     if (!sessionStart) sessionStart = recStart;
     audioStartMs = recStart - sessionStart;
     pushTimeline("record-start");
+    logRow("● recording started", { cls: "milestone", ts: 0 });
     sendBtn.disabled = false; // Dispatch is live the entire time
-    toggleBtn.textContent = "❚❚ Pause";
+    toggleBtn.textContent = "⏸";
+    toggleBtn.title = "Pause recording";
     toggleBtn.classList.add("vp-recording");
+    updateClock();
     paintLooking();
-    anchorTimer = setInterval(() => (paintLooking(), pushTimeline("scroll")), 1200);
+    anchorTimer = setInterval(() => (paintLooking(), logTrail(), pushTimeline("scroll")), 1200);
     mediaRecorder = new MediaRecorder(mediaStream, mimeType());
     mediaRecorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     mediaRecorder.onstop = () => {
@@ -666,16 +759,21 @@
       recording = false;
       clearInterval(anchorTimer);
       try { mediaRecorder.pause(); } catch {}
-      toggleBtn.textContent = "● Resume";
+      toggleBtn.textContent = "⏵";
+      toggleBtn.title = "Resume recording";
       toggleBtn.classList.remove("vp-recording");
+      logRow("❚❚ paused", { cls: "milestone", ts: Date.now() - recStart });
     } else {
       paused = false;
       recording = true;
       try { mediaRecorder.resume(); } catch {}
-      anchorTimer = setInterval(() => (paintLooking(), pushTimeline("scroll")), 1200);
-      toggleBtn.textContent = "❚❚ Pause";
+      anchorTimer = setInterval(() => (paintLooking(), logTrail(), pushTimeline("scroll")), 1200);
+      toggleBtn.textContent = "⏸";
+      toggleBtn.title = "Pause recording";
       toggleBtn.classList.add("vp-recording");
+      logRow("● resumed", { cls: "milestone", ts: Date.now() - recStart });
     }
+    updateClock();
     paintLooking();
   }
   function stopAndGetAudio() {
@@ -746,6 +844,58 @@
     }
   }
 
+  // Copy-to-clipboard with a hidden-textarea fallback (github.com may block the
+  // async clipboard API under its Permissions-Policy).
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+  }
+  // A self-contained error report the user can paste straight back for a fix:
+  // the failure + session metadata + the full log feed as shown.
+  function buildErrorReport(why, bundle) {
+    const kb = Math.round(((bundle?.audioB64?.length || 0) * 0.75) / 1024);
+    const log = [...statusEl.querySelectorAll(".vp-logrow")].map((r) => r.textContent.trim()).join("\n");
+    return [
+      "voice-pr dispatch error",
+      `error: ${why}`,
+      `pr: ${prUrl}`,
+      `session: ${sessionId}`,
+      `bridge: ${BRIDGE}`,
+      `timeline events: ${bundle?.timeline?.length ?? timeline.length}, typed: ${bundle?.typedSegments?.length ?? segments.length}${kb ? `, audio ~${kb}KB` : ""}`,
+      `ua: ${navigator.userAgent}`,
+      "",
+      "log:",
+      log || "(empty)",
+    ].join("\n");
+  }
+  function makeCopyButton(getText, label = "⧉ Copy error") {
+    const b = document.createElement("button");
+    b.className = "vp-secondary";
+    b.textContent = label;
+    b.addEventListener("click", async () => {
+      const ok = await copyText(getText());
+      b.textContent = ok ? "Copied ✓" : "Copy failed — select the text";
+      setTimeout(() => (b.textContent = label), 1800);
+    });
+    return b;
+  }
+
   function offerRetry(bundle, why) {
     dispatched = false; // let the user try again without re-recording
     const kb = Math.round(((bundle.audioB64?.length || 0) * 0.75) / 1024);
@@ -754,7 +904,7 @@
       true
     );
     const wrap = document.createElement("div");
-    wrap.className = "vp-line";
+    wrap.className = "vp-actions-row";
     const btn = document.createElement("button");
     btn.className = "vp-send";
     btn.textContent = "↻ Retry dispatch";
@@ -765,6 +915,7 @@
       sendBundle(bundle);
     });
     wrap.appendChild(btn);
+    wrap.appendChild(makeCopyButton(() => buildErrorReport(why, bundle)));
     statusEl.appendChild(wrap);
     statusEl.scrollTop = statusEl.scrollHeight;
   }
@@ -786,14 +937,17 @@
     clearTimeout(scrollPauseTimer);
     renderHud();
     toggleBtn.disabled = true;
-    toggleBtn.textContent = "● Record";
+    toggleBtn.textContent = "⏺";
     toggleBtn.classList.remove("vp-recording");
+    if (clockEl) clockEl.classList.remove("live");
     lookingEl.textContent = "";
     sendBtn.disabled = true;
     sendBtn.textContent = "Sent ✓";
-    statusEl.hidden = false;
-    statusEl.innerHTML = `<div class="vp-result ok">✅ On it — handed to the orchestrator.</div>
-      <div class="vp-reassure">You can close this tab. Transcription + the work run on the server; the PR updates in a few minutes. (Your recording is saved locally until the orchestrator confirms.)</div>`;
+    logRow("→ dispatched — handed to the orchestrator", { cls: "milestone ok" });
+    logRow(
+      "You can close this tab. Transcription + the work run on the server; the PR updates in a few minutes. Your recording is saved locally until the orchestrator confirms.",
+      { cls: "reassure" }
+    );
     const audio = await stopAndGetAudio();
     const bundle = { prRef: prUrl, sessionId, typedSegments: segments, timeline, audioStartMs, ...(audio || {}) };
     savePending(bundle); // durable BEFORE the first network attempt
@@ -825,33 +979,57 @@
     if (stage === "error") return line(`error: ${detail.message}`, true);
     if (stage === "agent-log") return;
     const f = STAGE[stage];
-    line(f ? f(detail || {}) : stage);
+    progressLine(f ? f(detail || {}) : stage);
   }
+
+  // The newest streaming step shimmers ("running"); the next event settles it.
+  let lastRunRow = null;
+  function finalizeRun() {
+    if (lastRunRow) {
+      lastRunRow.classList.remove("running");
+      lastRunRow = null;
+    }
+  }
+  function progressLine(text) {
+    finalizeRun();
+    lastRunRow = logRow(text, { cls: "running" });
+  }
+
   function done(r) {
+    finalizeRun();
     const ok = r.status === "done";
-    statusEl.innerHTML = `
-      <div class="vp-result ${ok ? "ok" : "warn"}">
-        ${ok ? "✅" : r.status === "failed" ? "⚠️" : "⏳"} ${escapeHtml(r.summary)}
-      </div>
-      <div class="vp-line">work item <code>${r.workItemId}</code>${
-        r.refinery ? ` · refinery ${r.refinery.status}` : ""
-      }</div>
-      ${
-        r.trailCommentUrl
-          ? `<a class="vp-link" href="${r.trailCommentUrl}" target="_blank">see the comment on the PR →</a>`
-          : ""
-      }
-      <button id="vp-reload" class="vp-send">Refresh PR to see commits</button>`;
-    const rl = statusEl.querySelector("#vp-reload");
-    if (rl) rl.addEventListener("click", () => location.reload());
+    const box = document.createElement("div");
+    box.className = `vp-result ${ok ? "ok" : "warn"}`;
+    const head = document.createElement("div");
+    head.className = "headline";
+    head.textContent = `${ok ? "✅" : r.status === "failed" ? "⚠️" : "⏳"} ${r.summary}`;
+    box.appendChild(head);
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = `work item ${r.workItemId}${r.refinery ? ` · refinery ${r.refinery.status}` : ""}`;
+    box.appendChild(sub);
+    if (r.trailCommentUrl) {
+      const a = document.createElement("a");
+      a.className = "vp-link";
+      a.href = r.trailCommentUrl;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "see the comment on the PR →";
+      box.appendChild(a);
+    }
+    const reload = document.createElement("button");
+    reload.className = "vp-send";
+    reload.textContent = "Refresh PR to see commits";
+    reload.addEventListener("click", () => location.reload());
+    box.appendChild(reload);
+    clearEmpty();
+    statusEl.appendChild(box);
+    statusEl.scrollTop = statusEl.scrollHeight;
   }
 
   function line(text, isErr) {
-    const d = document.createElement("div");
-    d.className = "vp-line" + (isErr ? " vp-warn" : "");
-    d.textContent = text;
-    statusEl.appendChild(d);
-    statusEl.scrollTop = statusEl.scrollHeight;
+    finalizeRun();
+    return logRow(text, { cls: isErr ? "err" : "" });
   }
   function escapeHtml(s) {
     return (s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -871,13 +1049,17 @@
     toggleBtn.disabled = true;
     sendBtn.disabled = true;
     sendBtn.textContent = "Sent ✓";
-    statusEl.hidden = false;
-    statusEl.innerHTML = `<div class="vp-result warn">↻ Recovered an un-dispatched recording${
-      ago != null ? ` from ${ago} min ago` : ""
-    }${kb ? ` (~${kb}KB audio)` : ""}.</div>
-      <div class="vp-reassure">The last dispatch didn't complete. Resend it to the orchestrator, or discard.</div>`;
+    setContextChips();
+    statusEl.innerHTML = "";
+    logRow(
+      `↻ Recovered an un-dispatched recording${ago != null ? ` from ${ago} min ago` : ""}${
+        kb ? ` (~${kb}KB audio)` : ""
+      }.`,
+      { cls: "milestone" }
+    );
+    logRow("The last dispatch didn't complete. Resend it to the orchestrator, or discard.", { cls: "reassure" });
     const wrap = document.createElement("div");
-    wrap.className = "vp-line";
+    wrap.className = "vp-actions-row";
     const resend = document.createElement("button");
     resend.className = "vp-send";
     resend.textContent = "↻ Resend to orchestrator";
@@ -889,7 +1071,7 @@
       sendBundle(pending);
     });
     const discard = document.createElement("button");
-    discard.className = "vp-dbg";
+    discard.className = "vp-secondary";
     discard.textContent = "Discard";
     discard.addEventListener("click", () => {
       clearPending();
