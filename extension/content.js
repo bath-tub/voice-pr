@@ -203,33 +203,38 @@
   root.innerHTML = `
     <button id="vp-pill" class="vp-pill">🎙️ Review with voice</button>
     <div id="vp-panel" class="vp-panel" hidden>
-      <div class="vp-head">
-        <span class="vp-title">🎙️ voice-pr</span>
-        <span class="vp-head-right">
-          <button id="vp-gaze-btn" class="vp-dbg" title="experimental: on-device webcam eye tracking (video never leaves your machine)" hidden>👁 gaze</button>
-          <button id="vp-dev-btn" class="vp-dbg" title="developer view — mouse/scroll attention tracking, the live capture feed + most-attended HUD, and the bridge→whisper→gh→orchestrator preflight (off by default; default is a clean voice-only panel)">🔧 dev</button>
-          <button id="vp-close" class="vp-x">✕</button>
-        </span>
-      </div>
-      <div id="vp-context" class="vp-context">PR #${m[3]}</div>
-      <div id="vp-looking" class="vp-looking"></div>
-      <div id="vp-hud" class="vp-hud" hidden>
-        <div class="vp-hud-current">
-          <span id="vp-hud-pulse" class="vp-pulse"></span>
-          <span id="vp-hud-anchor" class="vp-hud-anchor">—</span>
-        </div>
-        <ol id="vp-hud-feed" class="vp-hud-feed"></ol>
-        <div class="vp-hud-top">
-          <div class="vp-hud-top-label">Most attended</div>
-          <ol id="vp-hud-topn" class="vp-hud-topn"></ol>
-        </div>
-      </div>
-      <div id="vp-debug" class="vp-debug" hidden></div>
-      <div class="vp-actions">
-        <button id="vp-toggle" class="vp-rec">● Record</button>
+      <header class="vp-bar">
+        <button id="vp-toggle" class="vp-rec" title="Start / pause recording">⏺</button>
+        <span id="vp-clock" class="vp-clock">0:00</span>
+        <span class="vp-bar-gap"></span>
         <button id="vp-send" class="vp-send" disabled>Dispatch →</button>
+        <div class="vp-menu-wrap">
+          <button id="vp-menu-btn" class="vp-icon" title="More" aria-haspopup="true" aria-expanded="false">⋯</button>
+          <div id="vp-menu" class="vp-menu" role="menu" hidden>
+            <button id="vp-dev-btn" class="vp-menu-item" role="menuitemcheckbox" title="developer view — mouse/scroll attention tracking, the live capture feed + most-attended HUD, and the bridge→whisper→gh→orchestrator preflight (off by default; default is a clean voice-only panel)">🔧 Developer view</button>
+            <button id="vp-gaze-btn" class="vp-menu-item" role="menuitemcheckbox" title="experimental: on-device webcam eye tracking (video never leaves your machine)" hidden>👁 Eye tracking</button>
+          </div>
+        </div>
+        <button id="vp-close" class="vp-icon vp-x" title="Close">✕</button>
+      </header>
+      <div id="vp-context" class="vp-context"></div>
+      <div class="vp-body">
+        <div id="vp-ready" class="vp-ready" hidden></div>
+        <div id="vp-looking" class="vp-looking vp-now" aria-live="polite"></div>
+        <div id="vp-status" class="vp-log" role="log" aria-live="polite"></div>
+        <div id="vp-hud" class="vp-hud" hidden>
+          <div class="vp-hud-current">
+            <span id="vp-hud-pulse" class="vp-pulse"></span>
+            <span id="vp-hud-anchor" class="vp-hud-anchor">—</span>
+          </div>
+          <ol id="vp-hud-feed" class="vp-hud-feed"></ol>
+          <div class="vp-hud-top">
+            <div class="vp-hud-top-label">Most attended</div>
+            <ol id="vp-hud-topn" class="vp-hud-topn"></ol>
+          </div>
+        </div>
+        <div id="vp-debug" class="vp-debug" hidden></div>
       </div>
-      <div id="vp-status" class="vp-status" hidden></div>
     </div>`;
   document.body.appendChild(root);
 
@@ -266,12 +271,97 @@
     gazeBtn = $("#vp-gaze-btn"),
     toggleBtn = $("#vp-toggle"),
     sendBtn = $("#vp-send"),
+    clockEl = $("#vp-clock"),
+    menuBtn = $("#vp-menu-btn"),
+    menuEl = $("#vp-menu"),
+    readyEl = $("#vp-ready"),
     statusEl = $("#vp-status"),
     hudEl = $("#vp-hud"),
     hudPulseEl = $("#vp-hud-pulse"),
     hudAnchorEl = $("#vp-hud-anchor"),
     hudFeedEl = $("#vp-hud-feed"),
     hudTopEl = $("#vp-hud-topn");
+
+  // ---------- overflow menu (holds dev + gaze) --------------------------------
+  function closeMenu() {
+    menuEl.hidden = true;
+    menuBtn.setAttribute("aria-expanded", "false");
+  }
+  menuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const opening = menuEl.hidden;
+    menuEl.hidden = !opening;
+    menuBtn.setAttribute("aria-expanded", String(opening));
+  });
+  document.addEventListener("click", (e) => {
+    if (!menuEl.hidden && !menuEl.contains(e.target) && e.target !== menuBtn) closeMenu();
+  });
+
+  // ---------- context strip: chips (badges) -----------------------------------
+  const chip = (text, cls = "") =>
+    `<span class="vp-chip${cls ? " " + cls : ""}">${escapeHtml(text)}</span>`;
+  function setContextChips() {
+    ctxEl.innerHTML = chip("🎙 voice-pr", "brand") + chip(`PR #${m[3]}`);
+  }
+
+  // ---------- control-bar clock ----------------------------------------------
+  const fmtClock = (ms) => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+  function updateClock() {
+    if (!clockEl) return;
+    if (recording) clockEl.textContent = fmtClock(Date.now() - recStart);
+    else if (!paused) clockEl.textContent = "0:00";
+    clockEl.classList.toggle("live", recording);
+  }
+
+  // ---------- unified log feed (captured anchors → dispatch progress) ---------
+  // The log is the panel's spine: while recording it shows the anchor trail;
+  // after dispatch the same feed streams orchestrator progress. Auto-follows the
+  // newest row (shadcn MessageScroller idea) and caps its length.
+  const LOG_MAX = 80;
+  function clearEmpty() {
+    statusEl.querySelector(".vp-empty")?.remove();
+  }
+  function logRow(text, { cls = "", ts = null } = {}) {
+    clearEmpty();
+    const row = document.createElement("div");
+    row.className = "vp-logrow" + (cls ? " " + cls : "");
+    if (ts != null) {
+      const t = document.createElement("span");
+      t.className = "vp-ts";
+      t.textContent = fmtClock(ts);
+      row.appendChild(t);
+    }
+    const span = document.createElement("span");
+    span.className = "vp-logtext";
+    span.textContent = text;
+    row.appendChild(span);
+    statusEl.appendChild(row);
+    while (statusEl.childElementCount > LOG_MAX) statusEl.firstElementChild.remove();
+    statusEl.scrollTop = statusEl.scrollHeight;
+    return row;
+  }
+  function logEmpty(text) {
+    statusEl.innerHTML = "";
+    const d = document.createElement("div");
+    d.className = "vp-empty";
+    d.textContent = text;
+    statusEl.appendChild(d);
+  }
+  // Display-only viewport trail: append a row when the viewport file:line changes
+  // while recording. This never touches the anchoring `timeline` — it just makes
+  // visible what you were reading as you talked.
+  let lastTrailKey = "";
+  function logTrail() {
+    if (!recording) return;
+    const v = anchorViewport();
+    const key = v.file ? `${v.file}:${v.line ?? ""}` : "";
+    if (!key || key === lastTrailKey) return;
+    lastTrailKey = key;
+    logRow(`◎ ${fmtAnchor(v)}`, { cls: "trail", ts: Date.now() - recStart });
+  }
 
   // ---------- live attention HUD: always visible while a session is open -----
   const SIGNAL_ICON = {
@@ -349,15 +439,23 @@
     renderHud();
   }
   function resetUI() {
-    statusEl.hidden = true;
     statusEl.innerHTML = "";
+    pipe = null;
+    // reserve the banner slot immediately (no empty → pop-in on open)
+    setReady("checking", "Checking you can record & submit…");
     lookingEl.textContent = "";
     debugEl.innerHTML = "";
-    ctxEl.textContent = `PR #${m[3]}`;
+    setContextChips();
+    lastTrailKey = "";
+    if (clockEl) {
+      clockEl.textContent = "0:00";
+      clockEl.classList.remove("live");
+    }
+    closeMenu();
     sendBtn.disabled = false;
     sendBtn.textContent = "Dispatch →";
     toggleBtn.disabled = false;
-    toggleBtn.textContent = "● Record";
+    toggleBtn.textContent = "⏺";
     toggleBtn.classList.remove("vp-recording");
   }
 
@@ -365,6 +463,7 @@
   pill.addEventListener("click", () => {
     teardown();
     resetUI();
+    logEmpty("scroll the diff and talk — the file:line you're reading shows up here.");
     sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     sessionStart = Date.now();
     captureOpen = true;
@@ -374,6 +473,7 @@
     paintLooking();
     pushTimeline("open");
     attentionTimer = setInterval(() => {
+      updateClock();
       const v = anchorViewport();
       const info = attention.tick(v);
       if (info.revisit) pushTimeline("revisit", { ...v, via: "viewport", weight: attention.weightOf(v) });
@@ -381,7 +481,7 @@
     }, 1000);
     renderHud();
     start();
-    if (devOn) runPreflight(); // opened in dev view → verify the chain up front
+    runPreflight(); // validate the whole record→submit chain up front, for everyone
   });
   $("#vp-close").addEventListener("click", () => {
     teardown(); // closing cancels the current session; reopening starts fresh
@@ -395,35 +495,32 @@
   // every stage present and pending — then each row ticks from ✗ to ✓ in place
   // as results come back, so nothing pops in one at a time.
   const PREFLIGHT_STAGES = ["bridge", "ffmpeg", "whisper", "whisper model", "gh auth", "orchestrator"];
-  const TICK_MS = 120; // stagger between rows resolving, for a staged feel
+
+  // The readiness banner — shown to EVERY user at record-start, not just dev.
+  // It answers one question before you invest time talking: can this session
+  // actually record and submit? Green auto-collapses; a problem stays put with a
+  // Recheck button. Dev view additionally renders the per-check breakdown below.
+  // The banner keeps a fixed slot the whole time the panel is open (no
+  // appear/collapse), so its state changes in place without moving anything.
+  function setReady(state, text, opts = {}) {
+    readyEl.hidden = false;
+    readyEl.className = `vp-ready ${state}`;
+    readyEl.innerHTML = "";
+    const msg = document.createElement("span");
+    msg.className = "vp-ready-msg";
+    msg.textContent = text;
+    readyEl.appendChild(msg);
+    if (opts.recheck) {
+      const b = document.createElement("button");
+      b.className = "vp-ready-recheck";
+      b.textContent = "Recheck";
+      b.addEventListener("click", () => runPreflight());
+      readyEl.appendChild(b);
+    }
+  }
+
   async function runPreflight() {
-    if (!devOn) return;
-    debugEl.hidden = false;
-    let box = debugEl.querySelector(".vp-preflight");
-    if (!box) {
-      box = document.createElement("div");
-      box.className = "vp-preflight";
-      debugEl.prepend(box);
-    }
-    box.innerHTML = "";
-    const head = document.createElement("div");
-    head.className = "vp-dbgrow";
-    head.innerHTML = "<b>⏳ preflight — bridge → whisper → gh → orchestrator</b>";
-    box.appendChild(head);
-    const rows = new Map();
-    for (const name of PREFLIGHT_STAGES) {
-      const row = document.createElement("div");
-      row.className = "vp-dbgrow vp-preflight-row";
-      row.textContent = `◌ ${name} — checking…`;
-      box.appendChild(row);
-      rows.set(name, row);
-    }
-    const setRow = (name, ok, detail) => {
-      const row = rows.get(name);
-      if (!row) return;
-      row.className = `vp-dbgrow vp-preflight-row ${ok ? "ok" : "vp-warn"}`;
-      row.textContent = `${ok ? "✓" : "✗"} ${name}${detail ? ` — ${detail}` : ""}`;
-    };
+    setReady("checking", "Checking you can record & submit…");
     let resp;
     try {
       resp = await new Promise((resolve) => chrome.runtime.sendMessage({ type: "preflight" }, resolve));
@@ -431,22 +528,44 @@
       resp = { ok: false, error: String(e) };
     }
     if (!resp || !resp.ok || !resp.json) {
-      const why = resp?.error ? ` (${resp.error})` : "";
-      PREFLIGHT_STAGES.forEach((name, i) =>
-        setTimeout(() => setRow(name, false, i === 0 ? `not reachable — start it with npm run serve${why}` : "bridge down"), i * TICK_MS)
+      setReady("warn", "Bridge not reachable — start it with `npm run serve`. You can record, but dispatch will fail.", {
+        recheck: true,
+      });
+    } else if (resp.json.ok) {
+      setReady("ok", "Ready — bridge, Whisper, GitHub & orchestrator all good.");
+    } else {
+      const failing = resp.json.checks.filter((c) => !c.ok);
+      const d = failing[0]?.detail ? ` — ${failing[0].detail}` : "";
+      setReady(
+        "warn",
+        `Not ready: ${failing.map((c) => c.name).join(", ")}${d}. Fix before recording — dispatch will fail.`,
+        { recheck: true }
       );
-      head.innerHTML = "<b>✗ not ready — start the bridge (npm run serve)</b>";
-      return;
     }
-    const byName = Object.fromEntries(resp.json.checks.map((c) => [c.name, c]));
-    PREFLIGHT_STAGES.forEach((name, i) =>
-      setTimeout(() => {
-        const c = byName[name];
-        setRow(name, !!(c && c.ok), c ? c.detail || "" : "no result");
-        if (i === PREFLIGHT_STAGES.length - 1)
-          head.innerHTML = `<b>${resp.json.ok ? "✅ ready — start recording" : "⚠️ not ready — fix the ✗ items"}</b>`;
-      }, i * TICK_MS)
-    );
+    if (devOn) preflightDetail(resp); // full per-check breakdown, dev only
+  }
+
+  function preflightDetail(resp) {
+    debugEl.hidden = false;
+    let box = debugEl.querySelector(".vp-preflight");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "vp-preflight";
+      debugEl.prepend(box);
+    }
+    const j = resp && resp.ok ? resp.json : null;
+    const head = `<div class="vp-dbgrow"><b>${
+      !j ? "✗ bridge not reachable — npm run serve" : j.ok ? "✅ ready — you can record & submit" : "⚠️ not ready — fix the ✗ items"
+    }</b></div>`;
+    const rows = PREFLIGHT_STAGES.map((name) => {
+      const c = j ? j.checks.find((x) => x.name === name) : null;
+      const ok = j ? !!(c && c.ok) : false;
+      const detail = c ? c.detail : name === "bridge" ? "not reachable" : "bridge down";
+      return `<div class="vp-dbgrow vp-preflight-row ${ok ? "ok" : "vp-warn"}">${ok ? "✓" : "✗"} ${name}${
+        detail ? ` — ${escapeHtml(detail)}` : ""
+      }</div>`;
+    }).join("");
+    box.innerHTML = head + rows;
   }
   function debugLine(a, src) {
     if (!devOn) return;
@@ -584,7 +703,7 @@
     devOn = !devOn;
     localStorage.setItem("voicepr:dev", devOn ? "1" : "0");
     applyDev();
-    if (devOn && captureOpen) runPreflight(); // turning on = check the chain now
+    if (captureOpen) runPreflight(); // re-run so the dev breakdown appears/updates
   });
   applyDev();
 
@@ -592,34 +711,29 @@
   // The content script can't hit localhost directly (Chrome blocks the loopback
   // address space); the background service worker makes the bridge calls.
   function loadContext() {
-    ctxEl.textContent = "loading context…";
+    ctxEl.innerHTML = chip("🎙 voice-pr", "brand") + chip("loading context…");
     chrome.runtime.sendMessage({ type: "context", prUrl }, (res) => {
       if (!res || !res.ok || res.json?.error) {
-        ctxEl.innerHTML = `<span class="vp-warn">bridge not reachable — is the voice-pr server running on ${BRIDGE}?</span>`;
+        ctxEl.innerHTML =
+          chip("🎙 voice-pr", "brand") +
+          chip(`bridge not reachable — is the server running on ${BRIDGE}?`, "vp-warn");
         return;
       }
       const c = res.json;
-      const bits = [`PR #${c.pr.number}`, c.pr.branch];
-      if (c.jiraKey) bits.push(`🎫 ${c.jiraKey}`);
-      if (c.checksSummary) bits.push(`✔︎ ${c.checksSummary}`);
-      ctxEl.textContent = bits.join("  ·  ");
+      const bits = [chip("🎙 voice-pr", "brand"), chip(`PR #${c.pr.number}`), chip(c.pr.branch)];
+      if (c.jiraKey) bits.push(chip(`🎫 ${c.jiraKey}`, "tk"));
+      if (c.checksSummary) bits.push(chip(`✔︎ ${c.checksSummary}`, "ok"));
+      ctxEl.innerHTML = bits.join("");
     });
   }
 
   // ---------- audio recording ------------------------------------------------
+  // The now-line is the live anchor readout (the clock/red state lives in the
+  // bar, so it isn't duplicated here).
   function paintLooking() {
     if (paused) return (lookingEl.innerHTML = `<span class="vp-dim">⏸ paused</span>`);
     if (!captureOpen) return (lookingEl.textContent = "");
-    if (!recording) {
-      lookingEl.innerHTML = `<span class="vp-dim">capturing attention · pointing at ${escapeHtml(
-        fmtAnchor(anchorNow())
-      )}</span>`;
-      return;
-    }
-    const secs = Math.floor((Date.now() - recStart) / 1000);
-    lookingEl.innerHTML = `<span class="vp-dim">🔴 recording ${Math.floor(secs / 60)}:${String(
-      secs % 60
-    ).padStart(2, "0")} · pointing at ${escapeHtml(fmtAnchor(anchorNow()))}</span>`;
+    lookingEl.innerHTML = `<span class="vp-dim">◎ pointing at</span> ${escapeHtml(fmtAnchor(anchorNow()))}`;
   }
   function mimeType() {
     for (const t of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"])
@@ -631,7 +745,7 @@
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      lookingEl.innerHTML = `<span class="vp-warn">mic blocked — allow it (🔒 in the address bar) or just type comments</span>`;
+      lookingEl.innerHTML = `<span class="vp-warn">mic blocked — allow it (🔒 in the address bar), then reopen the panel</span>`;
       sendBtn.disabled = false; // can still dispatch typed comments
       return;
     }
@@ -642,11 +756,14 @@
     if (!sessionStart) sessionStart = recStart;
     audioStartMs = recStart - sessionStart;
     pushTimeline("record-start");
+    logRow("● recording started", { cls: "milestone", ts: 0 });
     sendBtn.disabled = false; // Dispatch is live the entire time
-    toggleBtn.textContent = "❚❚ Pause";
+    toggleBtn.textContent = "⏸";
+    toggleBtn.title = "Pause recording";
     toggleBtn.classList.add("vp-recording");
+    updateClock();
     paintLooking();
-    anchorTimer = setInterval(() => (paintLooking(), pushTimeline("scroll")), 1200);
+    anchorTimer = setInterval(() => (paintLooking(), logTrail(), pushTimeline("scroll")), 1200);
     mediaRecorder = new MediaRecorder(mediaStream, mimeType());
     mediaRecorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     mediaRecorder.onstop = () => {
@@ -666,16 +783,21 @@
       recording = false;
       clearInterval(anchorTimer);
       try { mediaRecorder.pause(); } catch {}
-      toggleBtn.textContent = "● Resume";
+      toggleBtn.textContent = "⏵";
+      toggleBtn.title = "Resume recording";
       toggleBtn.classList.remove("vp-recording");
+      logRow("❚❚ paused", { cls: "milestone", ts: Date.now() - recStart });
     } else {
       paused = false;
       recording = true;
       try { mediaRecorder.resume(); } catch {}
-      anchorTimer = setInterval(() => (paintLooking(), pushTimeline("scroll")), 1200);
-      toggleBtn.textContent = "❚❚ Pause";
+      anchorTimer = setInterval(() => (paintLooking(), logTrail(), pushTimeline("scroll")), 1200);
+      toggleBtn.textContent = "⏸";
+      toggleBtn.title = "Pause recording";
       toggleBtn.classList.add("vp-recording");
+      logRow("● resumed", { cls: "milestone", ts: Date.now() - recStart });
     }
+    updateClock();
     paintLooking();
   }
   function stopAndGetAudio() {
@@ -746,6 +868,58 @@
     }
   }
 
+  // Copy-to-clipboard with a hidden-textarea fallback (github.com may block the
+  // async clipboard API under its Permissions-Policy).
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+  }
+  // A self-contained error report the user can paste straight back for a fix:
+  // the failure + session metadata + the full log feed as shown.
+  function buildErrorReport(why, bundle) {
+    const kb = Math.round(((bundle?.audioB64?.length || 0) * 0.75) / 1024);
+    const log = [...statusEl.querySelectorAll(".vp-logrow")].map((r) => r.textContent.trim()).join("\n");
+    return [
+      "voice-pr dispatch error",
+      `error: ${why}`,
+      `pr: ${prUrl}`,
+      `session: ${sessionId}`,
+      `bridge: ${BRIDGE}`,
+      `timeline events: ${bundle?.timeline?.length ?? timeline.length}, typed: ${bundle?.typedSegments?.length ?? segments.length}${kb ? `, audio ~${kb}KB` : ""}`,
+      `ua: ${navigator.userAgent}`,
+      "",
+      "log:",
+      log || "(empty)",
+    ].join("\n");
+  }
+  function makeCopyButton(getText, label = "⧉ Copy error") {
+    const b = document.createElement("button");
+    b.className = "vp-secondary";
+    b.textContent = label;
+    b.addEventListener("click", async () => {
+      const ok = await copyText(getText());
+      b.textContent = ok ? "Copied ✓" : "Copy failed — select the text";
+      setTimeout(() => (b.textContent = label), 1800);
+    });
+    return b;
+  }
+
   function offerRetry(bundle, why) {
     dispatched = false; // let the user try again without re-recording
     const kb = Math.round(((bundle.audioB64?.length || 0) * 0.75) / 1024);
@@ -754,7 +928,7 @@
       true
     );
     const wrap = document.createElement("div");
-    wrap.className = "vp-line";
+    wrap.className = "vp-actions-row";
     const btn = document.createElement("button");
     btn.className = "vp-send";
     btn.textContent = "↻ Retry dispatch";
@@ -765,6 +939,7 @@
       sendBundle(bundle);
     });
     wrap.appendChild(btn);
+    wrap.appendChild(makeCopyButton(() => buildErrorReport(why, bundle)));
     statusEl.appendChild(wrap);
     statusEl.scrollTop = statusEl.scrollHeight;
   }
@@ -786,72 +961,184 @@
     clearTimeout(scrollPauseTimer);
     renderHud();
     toggleBtn.disabled = true;
-    toggleBtn.textContent = "● Record";
+    toggleBtn.textContent = "⏺";
     toggleBtn.classList.remove("vp-recording");
+    if (clockEl) clockEl.classList.remove("live");
     lookingEl.textContent = "";
     sendBtn.disabled = true;
     sendBtn.textContent = "Sent ✓";
-    statusEl.hidden = false;
-    statusEl.innerHTML = `<div class="vp-result ok">✅ On it — handed to the orchestrator.</div>
-      <div class="vp-reassure">You can close this tab. Transcription + the work run on the server; the PR updates in a few minutes. (Your recording is saved locally until the orchestrator confirms.)</div>`;
+    pipe = renderPipeline();
+    logRow(
+      "You can close this tab — transcription + the work run on the server; your recording is saved locally until the orchestrator confirms.",
+      { cls: "reassure" }
+    );
     const audio = await stopAndGetAudio();
     const bundle = { prRef: prUrl, sessionId, typedSegments: segments, timeline, audioStartMs, ...(audio || {}) };
     savePending(bundle); // durable BEFORE the first network attempt
     sendBundle(bundle);
   });
 
-  const STAGE = {
-    transcribing: () => `transcribing your audio locally (Whisper)…`,
-    transcribed: (d) => `heard ${d.count} comment(s): “${(d.text || "").slice(0, 60)}…”`,
-    "pr-loaded": (d) => `loaded PR (branch ${d.branch})`,
-    context: (d) =>
-      `context: ${d.segments} comments${d.jiraKey ? `, ticket ${d.jiraKey}` : ""}${
-        d.checksSummary ? `, ${d.checksSummary}` : ""
-      }`,
-    "branch-queued": (d) =>
-      `waiting for earlier voice-pr dispatches on ${d.branch} (queue position ${d.position})`,
-    "branch-dispatch-start": (d) => `branch queue ready for ${d.branch}`,
-    "project-ready": () => `repo registered with the orchestrator`,
-    "work-filed": (d) => `filed work item ${d.id}`,
-    dispatching: (d) => `mailed the mayor to dispatch ${d.id}…`,
-    "work-status": (d) => `work item ${d.id}: ${d.status}`,
-    "re-signaled": (d) => `re-mailed dispatch-ready to the mayor for ${d.id}`,
-    refinery: (d) => `refinery: ${d.status}`,
-    commenting: () => `posting the intent trail on the PR…`,
-  };
-  function onEvent(ev) {
-    const { stage, detail } = ev;
-    if (stage === "result" || stage === "done") return done(detail);
-    if (stage === "error") return line(`error: ${detail.message}`, true);
-    if (stage === "agent-log") return;
-    const f = STAGE[stage];
-    line(f ? f(detail || {}) : stage);
+  // ---------- dispatch pipeline: a FIXED checklist, defined once --------------
+  // The steps from "stop recording" to "in the orchestrator's hands" are known
+  // up front, so we render them all at dispatch time and flip each pending →
+  // active → done in place as events arrive. Nothing appends, the panel never
+  // grows or scrolls mid-run, and unexpected events are ignored rather than
+  // dumped into the UI. Dynamic values (heard N, branch, work id) fill the
+  // step's label on completion.
+  const PIPELINE = [
+    { id: "transcribe", idle: "Transcribe audio", doing: "Transcribing audio…" },
+    { id: "comments", idle: "Detect comments", doing: "Listening for comments…" },
+    { id: "pr", idle: "Load PR", doing: "Loading PR…" },
+    { id: "context", idle: "Gather context", doing: "Gathering context…" },
+    { id: "register", idle: "Register repo", doing: "Registering repo…" },
+    { id: "file", idle: "File work item", doing: "Filing work item…" },
+    { id: "handoff", idle: "Hand to the orchestrator", doing: "Handing off…" },
+    { id: "work", idle: "Orchestrator working", doing: "Orchestrator working…" },
+    { id: "trail", idle: "Post intent trail", doing: "Posting intent trail…" },
+  ];
+  let pipe = null; // active pipeline controller (null until dispatch)
+  function renderPipeline() {
+    statusEl.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "vp-pipeline";
+    const rows = new Map();
+    for (const s of PIPELINE) {
+      const row = document.createElement("div");
+      row.className = "vp-step pending";
+      row.innerHTML = `<span class="vp-step-mark"></span><span class="vp-step-label"></span>`;
+      row.querySelector(".vp-step-label").textContent = s.idle;
+      wrap.appendChild(row);
+      rows.set(s.id, row);
+    }
+    statusEl.appendChild(wrap);
+    let activeId = null;
+    const set = (id, state, text) => {
+      const row = rows.get(id);
+      if (!row) return;
+      row.className = `vp-step ${state}`;
+      if (text != null) row.querySelector(".vp-step-label").textContent = text;
+      if (state === "active") activeId = id;
+    };
+    const labelOf = (id) => PIPELINE.find((p) => p.id === id) || {};
+    return {
+      activate: (id, text) => set(id, "active", text ?? labelOf(id).doing),
+      complete: (id, text) => set(id, "done", text ?? labelOf(id).idle),
+      note: (id, text) => set(id, "active", text), // keep active, update label
+      failActive: (text) => activeId && set(activeId, "fail", text),
+      completeRemaining: () =>
+        PIPELINE.forEach((s) => {
+          const r = rows.get(s.id);
+          if (r && !r.classList.contains("done")) set(s.id, "done", labelOf(s.id).idle);
+        }),
+      has: (id) => rows.has(id),
+    };
   }
+  const plural = (n, w) => `${n} ${w}${Number(n) === 1 ? "" : "s"}`;
+
+  function onEvent(ev) {
+    const { stage, detail: d = {} } = ev;
+    if (stage === "result" || stage === "done") return done(d);
+    if (stage === "agent-log") return;
+    if (!pipe) return; // events are only meaningful once the pipeline is shown
+    if (stage === "error") {
+      pipe.failActive(`Failed — ${d.message || "error"}`);
+      return;
+    }
+    switch (stage) {
+      case "transcribing":
+        pipe.activate("transcribe");
+        break;
+      case "transcribed":
+        pipe.complete("transcribe");
+        pipe.complete("comments", `Heard ${plural(d.count ?? 0, "comment")}`);
+        pipe.activate("pr");
+        break;
+      case "pr-loaded":
+        pipe.complete("pr", d.branch ? `Loaded PR · ${d.branch}` : "Loaded PR");
+        pipe.activate("context");
+        break;
+      case "context": {
+        const bits = [plural(d.segments ?? 0, "comment")];
+        if (d.jiraKey) bits.push(d.jiraKey);
+        if (d.checksSummary) bits.push(d.checksSummary);
+        pipe.complete("context", `Context · ${bits.join(" · ")}`);
+        pipe.activate("register");
+        break;
+      }
+      case "project-ready":
+        pipe.complete("register");
+        pipe.activate("file");
+        break;
+      case "work-filed":
+        pipe.complete("file", d.id ? `Filed ${d.id}` : "Filed work item");
+        pipe.activate("handoff");
+        break;
+      case "dispatching":
+        pipe.complete("handoff", "In the orchestrator's hands");
+        pipe.activate("work");
+        break;
+      case "work-status":
+        pipe.note("work", `Orchestrator working${d.status ? ` · ${d.status}` : ""}`);
+        break;
+      case "refinery":
+        pipe.note("work", `Refinery${d.status ? ` · ${d.status}` : ""}`);
+        break;
+      case "commenting":
+        pipe.complete("work");
+        pipe.activate("trail");
+        break;
+      // Queued behind another dispatch on the same branch: say so on the active
+      // step instead of spinning a silent "Registering repo…".
+      case "branch-queued":
+        pipe.note("register", `Queued behind an earlier dispatch${d.position ? ` · position ${d.position}` : ""}…`);
+        break;
+      case "branch-dispatch-start":
+        pipe.activate("register");
+        break;
+      // re-signaled and anything else: ignored — the fixed checklist doesn't
+      // react to every event.
+      default:
+        break;
+    }
+  }
+
   function done(r) {
     const ok = r.status === "done";
-    statusEl.innerHTML = `
-      <div class="vp-result ${ok ? "ok" : "warn"}">
-        ${ok ? "✅" : r.status === "failed" ? "⚠️" : "⏳"} ${escapeHtml(r.summary)}
-      </div>
-      <div class="vp-line">work item <code>${r.workItemId}</code>${
-        r.refinery ? ` · refinery ${r.refinery.status}` : ""
-      }</div>
-      ${
-        r.trailCommentUrl
-          ? `<a class="vp-link" href="${r.trailCommentUrl}" target="_blank">see the comment on the PR →</a>`
-          : ""
-      }
-      <button id="vp-reload" class="vp-send">Refresh PR to see commits</button>`;
-    const rl = statusEl.querySelector("#vp-reload");
-    if (rl) rl.addEventListener("click", () => location.reload());
+    if (pipe) {
+      if (ok) pipe.completeRemaining();
+      else pipe.failActive(`${r.status === "failed" ? "Failed" : "Incomplete"}`);
+    }
+    const box = document.createElement("div");
+    box.className = `vp-result ${ok ? "ok" : "warn"}`;
+    const head = document.createElement("div");
+    head.className = "headline";
+    head.textContent = `${ok ? "✅" : r.status === "failed" ? "⚠️" : "⏳"} ${r.summary}`;
+    box.appendChild(head);
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = `work item ${r.workItemId}${r.refinery ? ` · refinery ${r.refinery.status}` : ""}`;
+    box.appendChild(sub);
+    if (r.trailCommentUrl) {
+      const a = document.createElement("a");
+      a.className = "vp-link";
+      a.href = r.trailCommentUrl;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "see the comment on the PR →";
+      box.appendChild(a);
+    }
+    const reload = document.createElement("button");
+    reload.className = "vp-send";
+    reload.textContent = "Refresh PR to see commits";
+    reload.addEventListener("click", () => location.reload());
+    box.appendChild(reload);
+    clearEmpty();
+    statusEl.appendChild(box);
+    statusEl.scrollTop = statusEl.scrollHeight;
   }
 
   function line(text, isErr) {
-    const d = document.createElement("div");
-    d.className = "vp-line" + (isErr ? " vp-warn" : "");
-    d.textContent = text;
-    statusEl.appendChild(d);
-    statusEl.scrollTop = statusEl.scrollHeight;
+    return logRow(text, { cls: isErr ? "err" : "" });
   }
   function escapeHtml(s) {
     return (s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -871,13 +1158,17 @@
     toggleBtn.disabled = true;
     sendBtn.disabled = true;
     sendBtn.textContent = "Sent ✓";
-    statusEl.hidden = false;
-    statusEl.innerHTML = `<div class="vp-result warn">↻ Recovered an un-dispatched recording${
-      ago != null ? ` from ${ago} min ago` : ""
-    }${kb ? ` (~${kb}KB audio)` : ""}.</div>
-      <div class="vp-reassure">The last dispatch didn't complete. Resend it to the orchestrator, or discard.</div>`;
+    setContextChips();
+    statusEl.innerHTML = "";
+    logRow(
+      `↻ Recovered an un-dispatched recording${ago != null ? ` from ${ago} min ago` : ""}${
+        kb ? ` (~${kb}KB audio)` : ""
+      }.`,
+      { cls: "milestone" }
+    );
+    logRow("The last dispatch didn't complete. Resend it to the orchestrator, or discard.", { cls: "reassure" });
     const wrap = document.createElement("div");
-    wrap.className = "vp-line";
+    wrap.className = "vp-actions-row";
     const resend = document.createElement("button");
     resend.className = "vp-send";
     resend.textContent = "↻ Resend to orchestrator";
@@ -889,7 +1180,7 @@
       sendBundle(pending);
     });
     const discard = document.createElement("button");
-    discard.className = "vp-dbg";
+    discard.className = "vp-secondary";
     discard.textContent = "Discard";
     discard.addEventListener("click", () => {
       clearPending();
