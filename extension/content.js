@@ -1066,8 +1066,16 @@
         pipe.complete("work");
         pipe.activate("trail");
         break;
-      // branch-queued / branch-dispatch-start / re-signaled and anything else:
-      // ignored on purpose — the fixed checklist doesn't react to every event.
+      // Queued behind another dispatch on the same branch: say so on the active
+      // step instead of spinning a silent "Registering repo…".
+      case "branch-queued":
+        pipe.note("register", `Queued behind an earlier dispatch${d.position ? ` · position ${d.position}` : ""}…`);
+        break;
+      case "branch-dispatch-start":
+        pipe.activate("register");
+        break;
+      // re-signaled and anything else: ignored — the fixed checklist doesn't
+      // react to every event.
       default:
         break;
     }
