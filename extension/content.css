@@ -264,6 +264,31 @@
 }
 .vp-secondary:hover { background: var(--vp-subtle); color: var(--vp-text); }
 
+/* ---- dispatch pipeline: a fixed checklist that flips in place ------------- */
+.vp-log.pipe { max-height: none; overflow: visible; } /* show every step, no inner scroll */
+.vp-pipeline { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 4px; }
+.vp-step {
+  display: flex; align-items: center; gap: 9px;
+  padding: 4px 2px; font-size: 12.5px; line-height: 1.4;
+}
+.vp-step-mark {
+  flex: none; width: 14px; height: 14px;
+  display: inline-grid; place-items: center; font-size: 12px;
+}
+.vp-step-label { min-width: 0; }
+.vp-step.pending .vp-step-label { color: var(--vp-faint); }
+.vp-step.pending .vp-step-mark::before { content: "○"; color: var(--vp-faint); }
+.vp-step.active .vp-step-label { color: var(--vp-text); font-weight: 550; }
+.vp-step.active .vp-step-mark {
+  border: 2px solid var(--vp-border-soft); border-top-color: var(--vp-accent);
+  border-radius: 50%; animation: vp-spin 0.7s linear infinite;
+}
+.vp-step.done .vp-step-label { color: var(--vp-text); }
+.vp-step.done .vp-step-mark::before { content: "✓"; color: var(--vp-ok); font-weight: 700; }
+.vp-step.fail .vp-step-label { color: var(--vp-warn); }
+.vp-step.fail .vp-step-mark::before { content: "✕"; color: var(--vp-warn); font-weight: 700; }
+@keyframes vp-spin { to { transform: rotate(360deg); } }
+
 /* ---- dev sections: preflight + attention HUD (hidden unless dev view) ----- */
 .vp-debug {
   margin: 0 12px 8px; padding: 6px 8px; max-height: 130px; overflow-y: auto;

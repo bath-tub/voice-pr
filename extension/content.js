@@ -438,6 +438,8 @@
   }
   function resetUI() {
     statusEl.innerHTML = "";
+    statusEl.classList.remove("pipe");
+    pipe = null;
     lookingEl.textContent = "";
     debugEl.innerHTML = "";
     setContextChips();
@@ -943,9 +945,9 @@
     lookingEl.textContent = "";
     sendBtn.disabled = true;
     sendBtn.textContent = "Sent ✓";
-    logRow("→ dispatched — handed to the orchestrator", { cls: "milestone ok" });
+    pipe = renderPipeline();
     logRow(
-      "You can close this tab. Transcription + the work run on the server; the PR updates in a few minutes. Your recording is saved locally until the orchestrator confirms.",
+      "You can close this tab — transcription + the work run on the server; your recording is saved locally until the orchestrator confirms.",
       { cls: "reassure" }
     );
     const audio = await stopAndGetAudio();
@@ -954,50 +956,129 @@
     sendBundle(bundle);
   });
 
-  const STAGE = {
-    transcribing: () => `transcribing your audio locally (Whisper)…`,
-    transcribed: (d) => `heard ${d.count} comment(s): “${(d.text || "").slice(0, 60)}…”`,
-    "pr-loaded": (d) => `loaded PR (branch ${d.branch})`,
-    context: (d) =>
-      `context: ${d.segments} comments${d.jiraKey ? `, ticket ${d.jiraKey}` : ""}${
-        d.checksSummary ? `, ${d.checksSummary}` : ""
-      }`,
-    "branch-queued": (d) =>
-      `waiting for earlier voice-pr dispatches on ${d.branch} (queue position ${d.position})`,
-    "branch-dispatch-start": (d) => `branch queue ready for ${d.branch}`,
-    "project-ready": () => `repo registered with the orchestrator`,
-    "work-filed": (d) => `filed work item ${d.id}`,
-    dispatching: (d) => `mailed the mayor to dispatch ${d.id}…`,
-    "work-status": (d) => `work item ${d.id}: ${d.status}`,
-    "re-signaled": (d) => `re-mailed dispatch-ready to the mayor for ${d.id}`,
-    refinery: (d) => `refinery: ${d.status}`,
-    commenting: () => `posting the intent trail on the PR…`,
-  };
-  function onEvent(ev) {
-    const { stage, detail } = ev;
-    if (stage === "result" || stage === "done") return done(detail);
-    if (stage === "error") return line(`error: ${detail.message}`, true);
-    if (stage === "agent-log") return;
-    const f = STAGE[stage];
-    progressLine(f ? f(detail || {}) : stage);
-  }
-
-  // The newest streaming step shimmers ("running"); the next event settles it.
-  let lastRunRow = null;
-  function finalizeRun() {
-    if (lastRunRow) {
-      lastRunRow.classList.remove("running");
-      lastRunRow = null;
+  // ---------- dispatch pipeline: a FIXED checklist, defined once --------------
+  // The steps from "stop recording" to "in the orchestrator's hands" are known
+  // up front, so we render them all at dispatch time and flip each pending →
+  // active → done in place as events arrive. Nothing appends, the panel never
+  // grows or scrolls mid-run, and unexpected events are ignored rather than
+  // dumped into the UI. Dynamic values (heard N, branch, work id) fill the
+  // step's label on completion.
+  const PIPELINE = [
+    { id: "transcribe", idle: "Transcribe audio", doing: "Transcribing audio…" },
+    { id: "comments", idle: "Detect comments", doing: "Listening for comments…" },
+    { id: "pr", idle: "Load PR", doing: "Loading PR…" },
+    { id: "context", idle: "Gather context", doing: "Gathering context…" },
+    { id: "register", idle: "Register repo", doing: "Registering repo…" },
+    { id: "file", idle: "File work item", doing: "Filing work item…" },
+    { id: "handoff", idle: "Hand to the orchestrator", doing: "Handing off…" },
+    { id: "work", idle: "Orchestrator working", doing: "Orchestrator working…" },
+    { id: "trail", idle: "Post intent trail", doing: "Posting intent trail…" },
+  ];
+  let pipe = null; // active pipeline controller (null until dispatch)
+  function renderPipeline() {
+    statusEl.innerHTML = "";
+    statusEl.classList.add("pipe"); // fixed size — show every step, no inner scroll
+    const wrap = document.createElement("div");
+    wrap.className = "vp-pipeline";
+    const rows = new Map();
+    for (const s of PIPELINE) {
+      const row = document.createElement("div");
+      row.className = "vp-step pending";
+      row.innerHTML = `<span class="vp-step-mark"></span><span class="vp-step-label"></span>`;
+      row.querySelector(".vp-step-label").textContent = s.idle;
+      wrap.appendChild(row);
+      rows.set(s.id, row);
     }
+    statusEl.appendChild(wrap);
+    let activeId = null;
+    const set = (id, state, text) => {
+      const row = rows.get(id);
+      if (!row) return;
+      row.className = `vp-step ${state}`;
+      if (text != null) row.querySelector(".vp-step-label").textContent = text;
+      if (state === "active") activeId = id;
+    };
+    const labelOf = (id) => PIPELINE.find((p) => p.id === id) || {};
+    return {
+      activate: (id, text) => set(id, "active", text ?? labelOf(id).doing),
+      complete: (id, text) => set(id, "done", text ?? labelOf(id).idle),
+      note: (id, text) => set(id, "active", text), // keep active, update label
+      failActive: (text) => activeId && set(activeId, "fail", text),
+      completeRemaining: () =>
+        PIPELINE.forEach((s) => {
+          const r = rows.get(s.id);
+          if (r && !r.classList.contains("done")) set(s.id, "done", labelOf(s.id).idle);
+        }),
+      has: (id) => rows.has(id),
+    };
   }
-  function progressLine(text) {
-    finalizeRun();
-    lastRunRow = logRow(text, { cls: "running" });
+  const plural = (n, w) => `${n} ${w}${Number(n) === 1 ? "" : "s"}`;
+
+  function onEvent(ev) {
+    const { stage, detail: d = {} } = ev;
+    if (stage === "result" || stage === "done") return done(d);
+    if (stage === "agent-log") return;
+    if (!pipe) return; // events are only meaningful once the pipeline is shown
+    if (stage === "error") {
+      pipe.failActive(`Failed — ${d.message || "error"}`);
+      return;
+    }
+    switch (stage) {
+      case "transcribing":
+        pipe.activate("transcribe");
+        break;
+      case "transcribed":
+        pipe.complete("transcribe");
+        pipe.complete("comments", `Heard ${plural(d.count ?? 0, "comment")}`);
+        pipe.activate("pr");
+        break;
+      case "pr-loaded":
+        pipe.complete("pr", d.branch ? `Loaded PR · ${d.branch}` : "Loaded PR");
+        pipe.activate("context");
+        break;
+      case "context": {
+        const bits = [plural(d.segments ?? 0, "comment")];
+        if (d.jiraKey) bits.push(d.jiraKey);
+        if (d.checksSummary) bits.push(d.checksSummary);
+        pipe.complete("context", `Context · ${bits.join(" · ")}`);
+        pipe.activate("register");
+        break;
+      }
+      case "project-ready":
+        pipe.complete("register");
+        pipe.activate("file");
+        break;
+      case "work-filed":
+        pipe.complete("file", d.id ? `Filed ${d.id}` : "Filed work item");
+        pipe.activate("handoff");
+        break;
+      case "dispatching":
+        pipe.complete("handoff", "In the orchestrator's hands");
+        pipe.activate("work");
+        break;
+      case "work-status":
+        pipe.note("work", `Orchestrator working${d.status ? ` · ${d.status}` : ""}`);
+        break;
+      case "refinery":
+        pipe.note("work", `Refinery${d.status ? ` · ${d.status}` : ""}`);
+        break;
+      case "commenting":
+        pipe.complete("work");
+        pipe.activate("trail");
+        break;
+      // branch-queued / branch-dispatch-start / re-signaled and anything else:
+      // ignored on purpose — the fixed checklist doesn't react to every event.
+      default:
+        break;
+    }
   }
 
   function done(r) {
-    finalizeRun();
     const ok = r.status === "done";
+    if (pipe) {
+      if (ok) pipe.completeRemaining();
+      else pipe.failActive(`${r.status === "failed" ? "Failed" : "Incomplete"}`);
+    }
     const box = document.createElement("div");
     box.className = `vp-result ${ok ? "ok" : "warn"}`;
     const head = document.createElement("div");
@@ -1028,7 +1109,6 @@
   }
 
   function line(text, isErr) {
-    finalizeRun();
     return logRow(text, { cls: isErr ? "err" : "" });
   }
   function escapeHtml(s) {
