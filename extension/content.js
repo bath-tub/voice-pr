@@ -266,8 +266,9 @@
   root.id = "voicepr-root";
   root.innerHTML = `
     <div id="vp-pill" class="vp-pill">
-      <button id="vp-pill-open" class="vp-pill-open">🎙️ Review with voice<span id="vp-pill-badge" class="vp-pill-badge" hidden></span></button>
+      <button id="vp-pill-open" class="vp-pill-open">🎙️ Review with voice</button>
       <button id="vp-pill-rec" class="vp-pill-rec" title="Record now on this PR (⌥⇧R)">⏺</button>
+      <span id="vp-pill-badge" class="vp-pill-badge" hidden></span>
     </div>
     <div id="vp-hub-panel" class="vp-panel vp-hub-panel" hidden>
       <header class="vp-bar">
