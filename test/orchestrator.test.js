@@ -195,6 +195,40 @@ test("trackWorkItem derives failed from a failed refinery request", async () => 
   assert.equal(outcome.refinery.status, "failed");
 });
 
+test("#47: trackWorkItem completes via landed commits even when the poll never flips terminal", async () => {
+  // The exact stuck-forever world: mg stays available, refinery empty. A commit
+  // landing on the branch must end the track as done via the commit signal.
+  fake.setRules([
+    { cmd: "docker", pattern: "mg show", code: 0, stdout: "Status: available" },
+    { cmd: "docker", pattern: "refinery history", code: 0, stdout: "[]" },
+  ]);
+  const { emit, stages } = collector();
+  const landed = [{ oid: "cafef00d", messageHeadline: "landed work" }];
+  const outcome = await trackWorkItem("ca-11f8", "/w/r", emit, {
+    commitsLanded: async () => landed,
+  });
+  assert.equal(outcome.status, "done");
+  assert.equal(outcome.via, "commits");
+  assert.deepEqual(outcome.commits, landed);
+  assert.ok(stages().includes("commits-landed"));
+});
+
+test("#47: trackWorkItem advances promptly the moment commits land (not before)", async () => {
+  fake.setRules([
+    { cmd: "docker", pattern: "mg show", code: 0, stdout: "Status: available" },
+    { cmd: "docker", pattern: "refinery history", code: 0, stdout: "[]" },
+  ]);
+  const { emit } = collector();
+  let polls = 0;
+  // Empty for the first two polls, then a commit lands.
+  const outcome = await trackWorkItem("ca-11f8", "/w/r", emit, {
+    commitsLanded: async () => (++polls >= 3 ? [{ oid: "abc123", messageHeadline: "x" }] : []),
+  });
+  assert.equal(outcome.status, "done");
+  assert.equal(outcome.via, "commits");
+  assert.equal(polls, 3, "should return on the poll where the commit first appears");
+});
+
 test("cleanup", () => {
   fake.cleanup();
 });
