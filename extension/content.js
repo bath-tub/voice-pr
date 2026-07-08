@@ -1232,6 +1232,13 @@
       case "refinery":
         pipe.note("work", `Refinery${d.status ? ` · ${d.status}` : ""}`);
         break;
+      // Commits landed on the PR branch — the ground-truth completion signal.
+      // Advance past "Orchestrator working" immediately rather than waiting on
+      // the poll/headline-matched `commenting` event (which may never fire).
+      case "commits-landed":
+        pipe.complete("work", d.count ? `Merged ${plural(d.count, "commit")}` : "Merged");
+        pipe.activate("trail");
+        break;
       case "commenting":
         pipe.complete("work");
         pipe.activate("trail");

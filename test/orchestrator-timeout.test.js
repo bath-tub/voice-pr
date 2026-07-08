@@ -26,5 +26,16 @@ test("trackWorkItem returns timeout when the dispatch window elapses before a te
   const events = [];
   const outcome = await trackWorkItem("ca-11f8", "/w/r", (stage, detail) => events.push({ stage, detail }));
   assert.equal(outcome.status, "timeout");
+});
+
+test("#47: an empty commit probe does not false-fire — no commits land -> still timeout", async () => {
+  fake.setRules([
+    { cmd: "docker", pattern: "mg show", code: 0, stdout: "Status: available" },
+    { cmd: "docker", pattern: "refinery history", code: 0, stdout: "[]" },
+  ]);
+  const outcome = await trackWorkItem("ca-11f8", "/w/r", () => {}, {
+    commitsLanded: async () => [],
+  });
+  assert.equal(outcome.status, "timeout");
   fake.cleanup();
 });

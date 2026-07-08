@@ -36,12 +36,14 @@ function world(overrides = {}) {
   const commits = overrides.commits ?? [
     { oid: "deadbeefcafe0001", messageHeadline: "add exponential backoff (ca-1234)" },
   ];
+  const mgStatus = overrides.mgStatus ?? "done";
+  const refinery = overrides.refinery ?? "[]";
   const rules = [
     // gh — PR metadata (matched by a field unique to this call)
     { cmd: "gh", pattern: "headRefName", code: 0, stdout: JSON.stringify(meta) },
     // gh — checks summary
     { cmd: "gh", pattern: "pr checks", code: 0, stdout: "build\tpass\thttps://ci" },
-    // gh — commit list after merge
+    // gh — commit list (baseline probe + landing probe + post-merge attribution)
     { cmd: "gh", pattern: "--json commits", code: 0, stdout: JSON.stringify({ commits }) },
     // gh — intent-trail comment post
     { cmd: "gh", pattern: "issues/7/comments", code: 0, stdout: JSON.stringify({ html_url: `${PR_URL}#c1` }) },
@@ -51,8 +53,8 @@ function world(overrides = {}) {
     { cmd: "docker", pattern: "project add", code: 0, stdout: "" },
     { cmd: "docker", pattern: "mg new", code: 0, stdout: "Created ca-1234: voice-pr session" },
     { cmd: "docker", pattern: "mg mail send", code: 0, stdout: "" },
-    { cmd: "docker", pattern: "mg show", code: 0, stdout: "Status: done" },
-    { cmd: "docker", pattern: "refinery history", code: 0, stdout: "[]" },
+    { cmd: "docker", pattern: "mg show", code: 0, stdout: `Status: ${mgStatus}` },
+    { cmd: "docker", pattern: "refinery history", code: 0, stdout: refinery },
   ];
   fake.setRules([...rules, ...(overrides.extra ?? [])]);
 }
@@ -136,14 +138,56 @@ test("runSession advances the stages in the expected critical-path order", async
   ]);
 });
 
-test("runSession posts the intent-trail comment ONLY for commits carrying the (workItemId) tag", async () => {
-  // A commit whose headline lacks `(ca-1234)` must not be claimed as ours.
+test("runSession does not claim a commit that is neither (workItemId)-tagged nor landed this session", async () => {
+  // Corrected contract (#47): attribution prefers a `(ca-1234)` headline but
+  // falls back to commits that LANDED this session (by commit time). A commit
+  // that is neither tagged nor timestamped after dispatch (here: no
+  // committedDate at all) is a pre-existing branch commit — never claimed.
   world({ commits: [{ oid: "beef", messageHeadline: "unrelated drive-by change" }] });
   const { emit, stages } = record();
   const result = await runSession({ prRef: PR_URL, segments: SEGMENTS }, emit);
   assert.equal(result.status, "done");
-  assert.equal(result.trailCommentUrl, null, "no matching commit -> no trail comment");
+  assert.equal(result.trailCommentUrl, null, "no matching/landed commit -> no trail comment");
   assert.ok(!stages().includes("commenting"), "commenting stage must be skipped when nothing matches");
+});
+
+// Commit fixtures dated far in the future are unambiguously "after dispatch
+// started" regardless of when the suite runs — the deterministic stand-in for
+// "the polecat just pushed a commit onto the PR branch".
+const LANDED = "2999-01-01T00:00:00Z";
+
+test("#47: commits landing on the branch complete `work` even when the poll never flips terminal", async () => {
+  // mg stays `available` and refinery is empty for the whole window — the old
+  // code would sit on "Orchestrator working" until the 12-min timeout. A landed
+  // commit must now drive a prompt `done` via the commit signal.
+  world({
+    mgStatus: "available",
+    refinery: "[]",
+    commits: [{ oid: "aaaabbbbcccc0001", messageHeadline: "fix the retry (ca-1234)", committedDate: LANDED }],
+  });
+  const { emit, stages } = record();
+  const result = await runSession({ prRef: PR_URL, segments: SEGMENTS }, emit);
+  assert.equal(result.status, "done", "landed commit -> done, not timeout");
+  assert.ok(stages().includes("commits-landed"), "must emit the commits-landed signal that advances the UI");
+  assertSubsequence(stages(), ["work-status", "commits-landed", "commenting", "done"]);
+  assert.equal(result.trailCommentUrl, `${PR_URL}#c1`, "tagged landed commit still posts the intent trail");
+});
+
+test("#47: a landed commit WITHOUT a (workItemId) headline still advances to done and posts a trail comment", async () => {
+  // Headline mismatch used to skip `commenting`, leaving `work` stuck. The
+  // session-time fallback now attributes the landed commit so the UI advances
+  // and a trail comment is still posted.
+  world({
+    mgStatus: "in_progress",
+    refinery: "[]",
+    commits: [{ oid: "deadc0de0000beef", messageHeadline: "resolve review feedback", committedDate: LANDED }],
+  });
+  const { emit, stages } = record();
+  const result = await runSession({ prRef: PR_URL, segments: SEGMENTS }, emit);
+  assert.equal(result.status, "done");
+  assert.ok(stages().includes("commits-landed"));
+  assert.ok(stages().includes("commenting"), "session-fallback attribution still posts the trail");
+  assert.equal(result.trailCommentUrl, `${PR_URL}#c1`);
 });
 
 test("runSession serializes through the per-branch queue (emits branch-dispatch-start)", async () => {
