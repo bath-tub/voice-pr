@@ -112,8 +112,9 @@
       const pillBadge = document.createElement("div");
       pillBadge.className = "vp-pill";
       pillBadge.innerHTML =
-        '<button class="vp-pill-open">🎙️ Review with voice<span class="vp-pill-badge">3</span></button>' +
-        '<button class="vp-pill-rec" title="Record now">⏺</button>';
+        '<button class="vp-pill-open">🎙️ Review with voice</button>' +
+        '<button class="vp-pill-rec" title="Record now">⏺</button>' +
+        '<span class="vp-pill-badge">3</span>';
       cell("Collapsed pill — others busy", "pill · badge", "3 jobs in flight on other PRs. The badge (mirrored to the toolbar icon, D1) is the signal that survives a collapsed panel.", pillBadge);
 
       // ---- hub states (the state matrix) -------------------------------------

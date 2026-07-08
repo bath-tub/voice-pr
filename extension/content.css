@@ -86,9 +86,12 @@
 }
 .vp-pill-open:hover, .vp-pill-rec:hover { filter: brightness(1.12); }
 /* the active-count badge — a floating counter pinned to the pill's corner so it
-   reads as a notification bubble, not an off-center inline glyph */
+   reads as a notification bubble, not an off-center inline glyph. It is a direct
+   child of .vp-pill (NOT nested in a button): a button's hover `filter` would
+   otherwise become the badge's containing block and yank its anchor mid-hover. */
 .vp-pill-badge {
   position: absolute; top: -7px; right: -6px; z-index: 1;
+  pointer-events: none;
   display: grid; place-items: center; box-sizing: content-box;
   min-width: 10px; height: 18px; padding: 0 5px;
   border-radius: 999px; background: var(--vp-warn); color: #fff;
