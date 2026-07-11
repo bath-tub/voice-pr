@@ -245,6 +245,7 @@ function patchForEvent(ev) {
       runId: d.runId ?? null,
       metrics: d.metrics ?? null,
       trailCommentUrl: d.trailCommentUrl ?? null,
+      trailCommentPending: d.trailCommentPending ?? false,
     };
   }
   if (stage === "agent-log") return null; // noise
@@ -261,6 +262,7 @@ function patchForEvent(ev) {
     case "agent-running": return { status: "running", label: "Agent editing and validating…", agentId: d.agentId ?? null, runId: d.runId ?? null };
     case "agent-pushing": return { status: "running", label: `Pushing to ${d.branch || "PR branch"}…` };
     case "agent-finished": return { status: "running", label: d.commits ? `Pushed ${d.commits} commit${d.commits === 1 ? "" : "s"}` : "Review complete" };
+    case "comment-queued": return { status: "running", label: "Intent trail posting…" };
     case "commenting": return { status: "running", label: "Posting intent trail…" };
     case "branch-queued": return { status: "queued", label: `Queued${d.position ? ` · position ${d.position}` : ""}…` };
     default: return null;

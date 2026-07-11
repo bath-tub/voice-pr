@@ -1622,8 +1622,11 @@
       case "agent-finished":
         finishCommitTimer(d.commits ? "landed" : "no-commit");
         pipe.complete("work", d.commits ? `Pushed ${plural(d.commits, "commit")}` : "Review complete");
-        if (d.commits) pipe.activate("trail");
+        if (d.commits) pipe.activate("trail", "Posting intent trail…");
         else pipe.complete("trail", "No intent trail needed");
+        break;
+      case "comment-queued":
+        pipe.complete("trail", "Intent trail posting in background");
         break;
       case "commenting":
         pipe.complete("work");

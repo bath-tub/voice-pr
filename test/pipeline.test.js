@@ -192,7 +192,7 @@ test("runSession refuses closed and cross-repository PRs", async () => {
   );
 });
 
-test("runSession executes on the warm runtime and posts a commit trail", async () => {
+test("runSession executes on the warm runtime and posts a commit trail asynchronously", async () => {
   world();
   const runtime = fakeRuntime();
   const result = await runSession({
@@ -204,10 +204,14 @@ test("runSession executes on the warm runtime and posts a commit trail", async (
   assert.equal(result.status, "done");
   assert.equal(result.backend, "cursor-sdk");
   assert.equal(result.agentId, "agent-1");
-  assert.equal(result.trailCommentUrl, `${PR_URL}#c1`);
+  assert.equal(result.trailCommentUrl, null);
+  assert.equal(result.trailCommentPending, true);
   assert.equal(runtime.calls[0].kind, "execute");
   assert.equal(runtime.calls[0].input.segments, SEGMENTS);
-  assert.ok(fake.calls().some((call) => call.args.includes("issues/7/comments")));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(
+    fake.calls().some((call) => String(call.args).includes("issues/7/comments"))
+  );
 });
 
 test("runSession emits the minimal hot-path stage order", async () => {
@@ -230,7 +234,7 @@ test("runSession emits the minimal hot-path stage order", async () => {
     "interpreting",
     "agent-running",
     "agent-finished",
-    "commenting",
+    "comment-queued",
   ]);
 });
 
@@ -246,8 +250,9 @@ test("no confident commit completes without posting an intent trail", async () =
   );
   assert.equal(result.status, "done");
   assert.equal(result.trailCommentUrl, null);
+  assert.equal(result.trailCommentPending, false);
   assert.match(result.summary, /without making a confident code change/);
-  assert.ok(!trace.stages().includes("commenting"));
+  assert.ok(!trace.stages().includes("comment-queued"));
 });
 
 test("cleanup", () => fake.cleanup());
