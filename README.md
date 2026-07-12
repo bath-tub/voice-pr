@@ -1,4 +1,18 @@
-# voice-pr
+# Diffy
+
+Diffy is a draggable PR-review command center that lives on every GitHub pull
+request page. Its code-goblin launcher opens a PR-local session for:
+
+- **Apply changes** — the existing single-turn voice-to-patch path.
+- **Ask Diffy** — short, cited answers grounded in the current viewport and an
+  isolated read-only PR worktree.
+- **Follow-ups** — anchored voice/text notes routed only after explicit
+  confirmation to a kept note, one GitHub issue per item, or copied Slack text.
+- **Runs** — active and completed Apply Changes work across PRs.
+
+Review comments and CI repair are visible as disabled previews. Launcher
+position is global; questions, follow-ups, routing results, and the last screen
+persist per PR across reloads and GitHub in-tab navigation.
 
 Speak while reviewing your GitHub PR. As soon as the page loads, the extension
 deterministically resolves the PR context, refreshes a repository mirror, and
@@ -109,6 +123,10 @@ npm run daemon:logs
 - `POST /api/warm` — atomically leases prepared state and stages an idle agent.
 - `POST /api/dispatch` — transcribes, anchors, and sends the final instructions
   to that same agent while streaming NDJSON progress.
+- `POST /api/qa` — answers an anchored PR question in a separate sandboxed,
+  Plan-mode agent/worktree and verifies that HEAD and status remain unchanged.
+- `POST /api/followups/issues` — creates explicitly confirmed follow-up issues
+  with stable hidden idempotency markers and per-item partial-failure results.
 - `GET /api/preflight` — checks Whisper, GitHub auth, and Cursor SDK auth.
 - `GET /api/context` and `POST /api/transcribe` — standalone diagnostic paths.
 
@@ -129,6 +147,18 @@ extension origins, and caps request bodies at 100 MB.
 - A completed session is idempotent in-process.
 - Warm agents expire after 30 minutes by default.
 
+`lib/qa.js` owns a separate Q&A runtime. It uses its own repository cache,
+worktree root, agent namespace, TTL, and serial thread queue. It loads no
+ambient settings or MCP/plugin surfaces, runs in Plan mode with sandboxing, and
+checks for a dirty worktree or changed HEAD before and after every answer.
+
+Follow-up issue routing is deterministic and does not invoke a model. Each
+client item ID is hashed with the source PR into a hidden issue-body marker.
+Retries scan repository issues for that exact marker before creating anything,
+so a bridge restart does not duplicate an already-created issue. Slack routing
+only builds text in the tab and copies it; Diffy never sends a Slack message or
+infers a recipient.
+
 The local agent loads Cursor user, team, and plugin settings so existing
 Jira/MCP context can be consulted during execution. Repository-controlled
 project settings are excluded, the agent runs in a sandbox, and the managed
@@ -148,6 +178,9 @@ worktree is verified before push. It never force-pushes, rebases, or amends.
 | `VOICE_PR_CONTEXT_CACHE_MAX` | `50` | Maximum cached PR context entries |
 | `VOICE_PR_WORKSPACE_DIR` | `~/.voice-pr/workspaces` | Session worktrees |
 | `VOICE_PR_REPO_CACHE_DIR` | `~/.voice-pr/repo-cache` | Bare repository mirrors |
+| `VOICE_PR_QA_TTL_MS` | `900000` | Idle read-only Q&A thread lifetime |
+| `VOICE_PR_QA_WORKSPACE_DIR` | `~/.voice-pr/qa-workspaces` | Isolated Q&A worktrees |
+| `VOICE_PR_QA_REPO_CACHE_DIR` | `~/.voice-pr/qa-repo-cache` | Isolated Q&A mirrors |
 | `VOICE_PR_WHISPER_BIN` | `whisper-cli` | whisper.cpp binary |
 | `VOICE_PR_WHISPER_MODEL` | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin` | Model |
 | `VOICE_PR_ARCHIVE_DIR` | `~/.voice-pr/sessions` | Audio, transcripts, results, traces |
@@ -172,3 +205,8 @@ state is validated with `repo-cache-hit` followed by `repo-cache-current` or
 The extension saves a pending recording until the agent returns a terminal
 result. Session audio, transcript, timing events, result, and structured trace
 remain under `~/.voice-pr/sessions/<sessionId>/`.
+
+For manual testing of this branch, load this worktree's `extension/` directory
+as an unpacked Chrome extension. Open any PR, drag the goblin to each viewport
+edge, navigate among Conversation, Commits, Checks, and Files changed without a
+full reload, and verify the same PR-local Diffy session remains attached.

@@ -6,12 +6,13 @@
   const BRIDGE = "http://localhost:4100";
   const anchors = window.VoicePrAnchors.createAnchorResolver(document, window);
   const attention = window.VoicePrAnchors.createAttentionTracker();
-  const m = location.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-  if (!m) return;
-  const prUrl = `${location.origin}/${m[1]}/${m[2]}/pull/${m[3]}`;
+  let prContext = window.DiffyState.parsePrUrl(location.href);
+  if (!prContext) return;
+  let prUrl = prContext.prUrl;
+  let prPageVisible = true;
   if (document.getElementById("voicepr-root")) return; // guard against re-inject
 
-  const pageLoadedAt = Date.now();
+  let pageLoadedAt = Date.now();
   let pagePreparation = null;
   let pagePreparationRequested = false;
   let recording = false;
@@ -29,8 +30,10 @@
     captureOpen = false,
     paused = false,
     dispatched = false,
-    stopResolve = null,
+    audioResultPromise = null,
     activePort = null,
+    applyMicRequestToken = 0,
+    applyMicPending = false,
     attentionTimer = null,
     hudFeed = [];
   const HUD_FEED_MAX = 8;
@@ -106,6 +109,7 @@
     "preflight.": "server.js runPreflight() — dependency probes",
     "mic.": "extension/content.js start() — navigator.mediaDevices.getUserMedia",
     "recover.": "extension/content.js initSurface() + extension/hub.js classifyPrState — on-load state decision & crash recovery",
+    "diffy.": "extension/diffy-command-center.js + extension/content.js — command center interactions and PR rebinding",
     "bridge.": "server.js — HTTP endpoints",
     "exec.": "lib/exec.js — child processes (gh/git/docker/ffmpeg/whisper)",
     "pipeline.": "lib/pipeline.js — session → PR → warm-agent submit",
@@ -268,22 +272,35 @@
   const root = document.createElement("div");
   root.id = "voicepr-root";
   root.innerHTML = `
-    <div id="vp-pill" class="vp-pill">
-      <button id="vp-pill-open" class="vp-pill-open">🎙️ Review with voice</button>
-      <button id="vp-pill-rec" class="vp-pill-rec" title="Record now on this PR (⌥⇧R)">⏺</button>
-      <span id="vp-pill-badge" class="vp-pill-badge" hidden></span>
+    <div id="vp-diffy-launcher-wrap" class="vp-diffy-launcher-wrap">
+      <button id="vp-pill-open" class="vp-diffy-launcher" type="button"
+        aria-label="Open Diffy Command Center" aria-haspopup="dialog" aria-expanded="false">
+        <svg class="vp-diffy-goblin" viewBox="0 0 64 64" aria-hidden="true">
+          <path class="ear" d="M17 29 4 20l12 20M47 29l13-9-12 20"/>
+          <path class="head" d="M14 25c2-12 12-18 18-18s16 6 18 18l-3 22c-4 8-11 11-15 11s-11-3-15-11z"/>
+          <path class="brow" d="m21 28 8 2m14-2-8 2"/>
+          <circle class="eye" cx="24" cy="33" r="3"/><circle class="eye" cx="40" cy="33" r="3"/>
+          <path class="nose" d="m32 34-3 8 6-1"/>
+          <path class="mouth" d="M25 47c4 3 10 3 14 0"/>
+          <path class="tooth" d="m27 47 2 5 2-4m6 0 2 4 1-5"/>
+        </svg>
+        <span class="vp-diffy-sr">Diffy Command Center</span>
+        <span id="vp-pill-badge" class="vp-diffy-badge" hidden></span>
+      </button>
     </div>
-    <div id="vp-hub-panel" class="vp-panel vp-hub-panel" hidden>
-      <header class="vp-bar">
-        <span class="vp-hub-title">🎙 voice-pr</span>
+    <section id="vp-hub-panel" class="vp-panel vp-command-panel" role="dialog"
+      aria-label="Diffy Command Center" hidden>
+      <header class="vp-bar vp-diffy-bar">
+        <button id="vp-command-back" class="vp-icon vp-back" title="Back" hidden>‹</button>
+        <span id="vp-command-title" class="vp-hub-title">Diffy Command Center</span>
         <span class="vp-bar-gap"></span>
-        <button id="vp-hub-close" class="vp-icon vp-x" title="Close">✕</button>
+        <button id="vp-hub-close" class="vp-icon vp-x" title="Collapse Diffy" aria-label="Collapse Diffy">✕</button>
       </header>
       <div id="vp-hub-body" class="vp-hub-body"></div>
-    </div>
-    <div id="vp-panel" class="vp-panel" hidden>
+    </section>
+    <section id="vp-panel" class="vp-panel vp-apply-panel" role="dialog" aria-label="Apply changes" hidden>
       <header class="vp-bar">
-        <button id="vp-back" class="vp-icon vp-back" title="Back to background work">‹</button>
+        <button id="vp-back" class="vp-icon vp-back" title="Back to Diffy">‹</button>
         <button id="vp-toggle" class="vp-rec" title="Start / pause recording">⏺</button>
         <span id="vp-clock" class="vp-clock">0:00</span>
         <span class="vp-bar-gap"></span>
@@ -320,7 +337,7 @@
         </div>
         <div id="vp-debug" class="vp-debug" hidden></div>
       </div>
-    </div>`;
+    </section>`;
   document.body.appendChild(root);
 
   // The "laser" — highlights the diff line under the cursor while recording.
@@ -347,13 +364,14 @@
   document.body.appendChild(gazeDot);
 
   const $ = (id) => root.querySelector(id);
-  const pill = $("#vp-pill"),
+  const launcherWrap = $("#vp-diffy-launcher-wrap"),
     pillOpen = $("#vp-pill-open"),
-    pillRec = $("#vp-pill-rec"),
     pillBadge = $("#vp-pill-badge"),
     hubPanel = $("#vp-hub-panel"),
     hubBody = $("#vp-hub-body"),
     hubClose = $("#vp-hub-close"),
+    commandBack = $("#vp-command-back"),
+    commandTitle = $("#vp-command-title"),
     backBtn = $("#vp-back"),
     panel = $("#vp-panel"),
     ctxEl = $("#vp-context"),
@@ -400,7 +418,7 @@
   const chip = (text, cls = "") =>
     `<span class="vp-chip${cls ? " " + cls : ""}">${escapeHtml(text)}</span>`;
   function setContextChips() {
-    ctxEl.innerHTML = chip("🎙 voice-pr", "brand") + chip(`PR #${m[3]}`);
+    ctxEl.innerHTML = chip("Diffy", "brand") + chip(`PR #${prContext.number}`);
   }
 
   // ---------- control-bar clock ----------------------------------------------
@@ -551,6 +569,8 @@
   // Tear down all in-flight state and return the panel to a clean, fresh-session
   // state. Called on every open so reopening after a send/stop is never janky.
   function teardown() {
+    applyMicRequestToken++;
+    applyMicPending = false;
     try { if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop(); } catch {}
     mediaStream?.getTracks().forEach((t) => t.stop());
     clearInterval(anchorTimer);
@@ -561,12 +581,13 @@
     try { activePort?.disconnect(); } catch {}
     mediaRecorder = null;
     mediaStream = null;
-    stopResolve = null;
+    audioResultPromise = null;
     activePort = null;
     attentionTimer = null;
     recording = false;
     paused = false;
     dispatched = false;
+    commandCenter?.setActivity(null);
     chunks = [];
     recStart = 0;
     sessionStart = 0;
@@ -611,6 +632,8 @@
   // handler wires them. Recording is a deliberate action launched FROM the hub.
   const JOBS_KEY = "voicepr:jobs";
   let fleetJobs = {};
+  let commandCenter = null;
+  const diffyStorage = window.DiffyStorage.createStorage();
   function loadFleet(cb) {
     try { chrome.storage?.local?.get(JOBS_KEY, (o) => cb(o?.[JOBS_KEY] || {})); }
     catch { cb({}); }
@@ -618,27 +641,35 @@
   const jobTabId = (pr) => (fleetJobs[pr] && fleetJobs[pr].originTabId) || null;
 
   function updatePillBadge(jobs) {
+    if (recording || dispatched || commandCenter?.activity()) return;
     const n = Object.values(jobs || {}).filter((j) => window.VoicePrHub.isActive(j.status)).length;
     pillBadge.hidden = n === 0;
     pillBadge.textContent = n ? String(n) : "";
+    pillBadge.className = "vp-diffy-badge" + (n ? " fleet" : "");
   }
 
   // `animate` gates the staggered entrance: true on a fresh open, false on the
   // live re-renders driven by registry changes (a running job ticking would
   // otherwise re-slam the whole list into view on every update).
-  function renderHubViewWith(jobs, animate) {
+  function renderHubViewWith(jobs, animate, target = hubBody) {
     fleetJobs = jobs || {};
-    const job = fleetJobs[prUrl] || null;
-    Promise.all([loadPending(), loadHandoff()]).then(([pending, handoff]) => {
+    const renderPrUrl = prUrl;
+    const renderPrNumber = prContext.number;
+    const job = fleetJobs[renderPrUrl] || null;
+    Promise.all([
+      loadPending(renderPrUrl),
+      loadHandoff(renderPrUrl),
+    ]).then(([pending, handoff]) => {
+      if (prUrl !== renderPrUrl) return;
       const decision = window.VoicePrHub.classifyPrState({ job, pending, handoff });
       const hub = window.VoicePrHub.renderHub(document, {
-        thisPr: { prUrl, prNumber: m[3] },
+        thisPr: { prUrl: renderPrUrl, prNumber: renderPrNumber },
         decision,
         fleet: Object.values(fleetJobs),
       });
       if (animate) hub.classList.add("vp-enter");
-      hubBody.innerHTML = "";
-      hubBody.appendChild(hub);
+      target.innerHTML = "";
+      target.appendChild(hub);
     });
   }
   const renderHubView = (animate) => loadFleet((jobs) => renderHubViewWith(jobs, animate));
@@ -647,15 +678,12 @@
   function showHub(jobsMaybe) {
     captureOpen = false;
     panel.hidden = true;
-    pill.hidden = true;
-    hubPanel.hidden = false;
-    if (jobsMaybe) renderHubViewWith(jobsMaybe, true);
-    else renderHubView(true);
+    commandCenter.navigate("runs");
+    if (jobsMaybe) renderHubViewWith(jobsMaybe, true, hubBody);
   }
   function openHub() {
     trace("hub.open", { pr: prUrl });
-    teardown(); // cancel any half-open capture; reopening the hub is always clean
-    showHub();
+    commandCenter.open();
   }
 
   // Explicit capture — the ONLY path that arms the microphone (Law 1). Reached
@@ -673,9 +701,11 @@
     lastError = null;
     trace("panel.open", { pr: prUrl });
     captureOpen = true;
+    commandCenter?.markScreen("apply");
     hubPanel.hidden = true;
     panel.hidden = false;
-    pill.hidden = true;
+    pillOpen.setAttribute("aria-expanded", "true");
+    placeSurfaces();
     warmAgent();
     paintLooking();
     pushTimeline("open");
@@ -699,7 +729,8 @@
     captureOpen = false;
     hubPanel.hidden = true;
     panel.hidden = false;
-    pill.hidden = true;
+    pillOpen.setAttribute("aria-expanded", "true");
+    placeSurfaces();
     toggleBtn.disabled = true;
     toggleBtn.textContent = "⏺";
     toggleBtn.classList.remove("vp-recording");
@@ -712,8 +743,14 @@
   }
 
   function hubResend() {
-    loadPending().then((pending) => {
+    const recoveryPr = prUrl;
+    loadPending(recoveryPr).then((pending) => {
+      if (prUrl !== recoveryPr) return;
       if (!pending) return renderHubView();
+      if (pending.prRef && pending.prRef !== recoveryPr) {
+        trace("recover.stale", { pr: recoveryPr });
+        return;
+      }
       sessionId = pending.sessionId || sessionId;
       dispatched = true;
       trace("recover.resend", {});
@@ -730,45 +767,184 @@
   function hubAction(el) {
     const action = el.getAttribute("data-vp-action");
     const pr = el.getAttribute("data-vp-pr");
-    if (action === "record") return enterCapture();
+    if (action === "record") return commandCenter.navigate("apply");
     if (action === "jump") return chrome.runtime.sendMessage({ type: "focus-pr", prUrl: pr, tabId: jobTabId(pr) });
     if (action === "dismiss") return chrome.runtime.sendMessage({ type: "dismiss-job", prUrl: pr }, () => renderHubView());
     if (action === "clear-finished") return chrome.runtime.sendMessage({ type: "clear-finished-jobs" }, () => renderHubView());
     if (action === "retry" || action === "resend") return hubResend();
     if (action === "discard") return hubDiscard();
   }
-  hubBody.addEventListener("click", (e) => {
-    const el = e.target.closest("[data-vp-action]");
-    if (el) hubAction(el);
-  });
-  hubBody.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    const el = e.target.closest("[data-vp-action]");
-    if (el) { e.preventDefault(); hubAction(el); }
+
+  commandCenter = window.DiffyCommandCenter.create({
+    launcher: pillOpen,
+    badge: pillBadge,
+    panel: hubPanel,
+    body: hubBody,
+    title: commandTitle,
+    back: commandBack,
+    close: hubClose,
+    storage: diffyStorage,
+    runtime: chrome.runtime,
+    getAnchor: () => anchorViewport(),
+    onApply: ({
+      resume = false,
+      explicit = false,
+      resumeRecording = false,
+    } = {}) => {
+      if (resume && (captureOpen || dispatched || mediaRecorder)) {
+        if (resumeRecording && paused) pauseResume();
+        else if (
+          resumeRecording &&
+          captureOpen &&
+          !mediaRecorder &&
+          !applyMicPending
+        )
+          start();
+        else
+          commandCenter?.setActivity(
+            recording ? "listening" : dispatched ? "thinking" : null
+          );
+        hubPanel.hidden = true;
+        panel.hidden = false;
+        pillOpen.setAttribute("aria-expanded", "true");
+        placeSurfaces();
+        return;
+      }
+      if (resume && !explicit) {
+        commandCenter.markScreen("home");
+        return commandCenter.open();
+      }
+      enterCapture();
+    },
+    onShowPanel: () => {
+      panel.hidden = true;
+      pillOpen.setAttribute("aria-expanded", "true");
+      placeSurfaces();
+    },
+    onHidePanel: () => pillOpen.setAttribute("aria-expanded", "false"),
+    renderRuns: (target) => loadFleet((jobs) => renderHubViewWith(jobs, true, target)),
+    onRunsAction: hubAction,
+    beforeVoice: () => {
+      if (applyMicPending) {
+        applyMicRequestToken++;
+        applyMicPending = false;
+        return true;
+      }
+      if (mediaRecorder?.state === "recording" && !paused) {
+        pauseResume();
+        return true;
+      }
+      return false;
+    },
+    copyText,
+    onActivityChange: (next) => {
+      if (!next) updatePillBadge(fleetJobs);
+    },
+    onTrace: (code, detail) => trace(code, detail),
   });
 
-  pillOpen.addEventListener("click", openHub);
-  pillRec.addEventListener("click", enterCapture);
-  hubClose.addEventListener("click", () => {
-    trace("hub.close", {});
-    hubPanel.hidden = true;
-    pill.hidden = false;
+  const launcherSize = window.DiffyLauncher.DEFAULT_SIZE;
+  let launcherPosition = window.DiffyLauncher.snapPoint(
+    { x: innerWidth - launcherSize - 16, y: innerHeight - launcherSize - 24 },
+    { width: innerWidth, height: innerHeight },
+    launcherSize
+  );
+  function placeSurfaces() {
+    launcherWrap.style.left = `${launcherPosition.x}px`;
+    launcherWrap.style.top = `${launcherPosition.y}px`;
+    const pos = window.DiffyLauncher.panelPosition(
+      launcherPosition,
+      { width: innerWidth, height: innerHeight },
+      { width: Math.min(380, innerWidth - 24), height: Math.min(520, innerHeight - 24) },
+      launcherSize
+    );
+    for (const surface of [hubPanel, panel]) {
+      surface.style.left = `${pos.left}px`;
+      surface.style.top = `${pos.top}px`;
+      surface.dataset.edge = pos.edge;
+    }
+  }
+  function toggleDiffy() {
+    if (!hubPanel.hidden) return commandCenter.collapse();
+    if (!panel.hidden) {
+      panel.hidden = true;
+      pillOpen.setAttribute("aria-expanded", "false");
+      pillOpen.focus();
+      return;
+    }
+    openHub();
+  }
+  let suppressClickUntil = 0;
+  const drag = window.DiffyLauncher.createDragController({
+    onMove: (point) => {
+      launcherPosition = {
+        ...window.DiffyLauncher.clampPoint(
+          point,
+          { width: innerWidth, height: innerHeight },
+          launcherSize
+        ),
+        edge: launcherPosition.edge,
+      };
+      placeSurfaces();
+    },
+    onDrop: (point) => {
+      launcherPosition = window.DiffyLauncher.snapPoint(
+        point || launcherPosition,
+        { width: innerWidth, height: innerHeight },
+        launcherSize
+      );
+      placeSurfaces();
+      diffyStorage.savePosition(launcherPosition);
+    },
+    onClick: () => {
+      suppressClickUntil = Date.now() + 100;
+      toggleDiffy();
+    },
   });
+  pillOpen.addEventListener("pointerdown", (event) => {
+    pillOpen.setPointerCapture?.(event.pointerId);
+    drag.down(event, launcherPosition);
+  });
+  pillOpen.addEventListener("pointermove", (event) => drag.move(event));
+  pillOpen.addEventListener("pointerup", (event) => drag.up(event, launcherPosition));
+  pillOpen.addEventListener("pointercancel", () => drag.cancel());
+  pillOpen.addEventListener("click", () => {
+    if (Date.now() >= suppressClickUntil) toggleDiffy();
+  });
+  diffyStorage.loadPosition().then((saved) => {
+    if (saved) {
+      launcherPosition = window.DiffyLauncher.snapPoint(
+        saved,
+        { width: innerWidth, height: innerHeight },
+        launcherSize
+      );
+    }
+    placeSurfaces();
+  });
+  window.addEventListener("resize", () => {
+    launcherPosition = window.DiffyLauncher.snapPoint(
+      launcherPosition,
+      { width: innerWidth, height: innerHeight },
+      launcherSize
+    );
+    placeSurfaces();
+  });
+
   backBtn.addEventListener("click", () => {
     trace("panel.back", {});
-    teardown(); // leaving capture cancels the un-dispatched session
-    showHub();
+    panel.hidden = true;
+    commandCenter.navigate("home");
   });
   $("#vp-close").addEventListener("click", () => {
     trace("panel.close", {});
-    teardown(); // closing cancels the current session; reopening starts fresh
     panel.hidden = true;
-    pill.hidden = false;
+    pillOpen.setAttribute("aria-expanded", "false");
+    pillOpen.focus();
   });
 
   // Keyboard shortcut relayed by the background worker (author fast-path).
   chrome.runtime?.onMessage?.addListener((msg) => {
-    if (msg?.type === "vp-record-now") enterCapture();
+    if (msg?.type === "vp-record-now") commandCenter.navigate("apply");
   });
 
   // Live mirror: when the central registry changes, keep the pill badge honest
@@ -778,7 +954,8 @@
     if (area !== "local" || !changes[JOBS_KEY]) return;
     const jobs = changes[JOBS_KEY].newValue || {};
     updatePillBadge(jobs);
-    if (!hubPanel.hidden) renderHubViewWith(jobs);
+    if (!hubPanel.hidden && commandCenter.state().screen === "runs")
+      renderHubViewWith(jobs, false, hubBody);
   });
 
   // ---------- readiness check -------------------------------------------------
@@ -1070,10 +1247,16 @@
   function preparePage() {
     if (pagePreparationRequested) return;
     pagePreparationRequested = true;
-    trace("prepare.request", { pr: prUrl, pageLoadedAt });
+    const requestedPr = prUrl;
+    const requestedAt = pageLoadedAt;
+    trace("prepare.request", { pr: requestedPr, pageLoadedAt: requestedAt });
     chrome.runtime.sendMessage(
-      { type: "prepare", prUrl, pageLoadedAt },
+      { type: "prepare", prUrl: requestedPr, pageLoadedAt: requestedAt },
       (res) => {
+        if (prUrl !== requestedPr || pageLoadedAt !== requestedAt) {
+          trace("prepare.stale", { pr: requestedPr });
+          return;
+        }
         if (!res || !res.ok || res.json?.error) {
           trace("prepare.failed", {
             message: res?.json?.error || res?.error || "bridge not reachable",
@@ -1096,9 +1279,11 @@
   }
 
   function warmAgent() {
+    const requestedPr = prUrl;
+    const requestedSession = sessionId;
     if (pagePreparation?.pr) {
       const bits = [
-        chip("🎙 voice-pr", "brand"),
+        chip("Diffy", "brand"),
         chip(`PR #${pagePreparation.pr.number}`),
         chip(pagePreparation.pr.branch),
       ];
@@ -1108,24 +1293,28 @@
       ctxEl.innerHTML = bits.join("");
     } else {
       ctxEl.innerHTML =
-        chip("🎙 voice-pr", "brand") + chip("pre-warming agent…");
+        chip("Diffy", "brand") + chip("staging agent…");
     }
-    trace("warm.request", { pr: prUrl });
+    trace("warm.request", { pr: requestedPr });
     chrome.runtime.sendMessage(
       {
         type: "warm",
-        prUrl,
-        sessionId,
+        prUrl: requestedPr,
+        sessionId: requestedSession,
         recordStartedAt: sessionStart,
       },
       (res) => {
+        if (prUrl !== requestedPr || sessionId !== requestedSession) {
+          trace("warm.stale", { pr: requestedPr });
+          return;
+        }
         if (!res || !res.ok || res.json?.error) {
           traceError(
             "warm.failed",
             res?.json?.error || res?.error || "bridge not reachable"
           );
           ctxEl.innerHTML =
-            chip("🎙 voice-pr", "brand") +
+            chip("Diffy", "brand") +
             chip(
               `bridge not reachable — is the server running on ${BRIDGE}?`,
               "vp-warn"
@@ -1134,7 +1323,7 @@
         }
         const c = res.json;
         const bits = [
-          chip("🎙 voice-pr", "brand"),
+          chip("Diffy", "brand"),
           chip(`PR #${c.pr.number}`),
           chip(c.pr.branch),
         ];
@@ -1167,18 +1356,76 @@
   }
   async function start() {
     if (recording || mediaRecorder) return;
+    const requestedSession = sessionId;
+    const requestedPr = prUrl;
+    const micRequestToken = ++applyMicRequestToken;
+    applyMicPending = true;
+    commandCenter?.setActivity("thinking");
+    let requestedStream;
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      requestedStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
+      if (micRequestToken !== applyMicRequestToken) return;
+      applyMicPending = false;
+      if (sessionId !== requestedSession || prUrl !== requestedPr) return;
       traceError("mic.blocked", e?.message || "getUserMedia denied");
+      commandCenter?.setActivity(null);
       lookingEl.innerHTML = `<span class="vp-warn">mic blocked — allow it (🔒 in the address bar), then reopen the panel</span>`;
       lookingEl.appendChild(copyErrorButton("microphone blocked (getUserMedia denied)"));
       sendBtn.disabled = false; // can still dispatch typed comments
       return;
     }
+    if (micRequestToken === applyMicRequestToken)
+      applyMicPending = false;
+    if (
+      micRequestToken !== applyMicRequestToken ||
+      !captureOpen ||
+      sessionId !== requestedSession ||
+      prUrl !== requestedPr
+    ) {
+      requestedStream.getTracks().forEach((track) => track.stop());
+      trace("mic.stale", { pr: requestedPr });
+      return;
+    }
+    const sessionChunks = [];
+    let resolveAudio;
+    const nextAudioResult = new Promise(
+      (resolve) => (resolveAudio = resolve)
+    );
+    let recorder;
+    try {
+      recorder = new MediaRecorder(requestedStream, mimeType());
+      recorder.ondataavailable = (e) =>
+        e.data.size && sessionChunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(sessionChunks, {
+          type: sessionChunks[0]?.type || "audio/webm",
+        });
+        const ext = /mp4/.test(blob.type) ? "mp4" : "webm";
+        (blob.size ? blobToB64(blob) : Promise.resolve(null)).then((b64) => {
+          resolveAudio(b64 ? { audioB64: b64, ext } : null);
+        });
+      };
+      recorder.start();
+    } catch (error) {
+      try {
+        if (recorder?.state !== "inactive") recorder.stop();
+      } catch {}
+      requestedStream.getTracks().forEach((track) => track.stop());
+      traceError("mic.recorder-failed", error?.message || String(error));
+      commandCenter?.setActivity(null);
+      lookingEl.innerHTML =
+        '<span class="vp-warn">audio recorder unavailable — typed comments still work</span>';
+      lookingEl.appendChild(copyErrorButton("MediaRecorder failed to start"));
+      sendBtn.disabled = false;
+      return;
+    }
+    mediaStream = requestedStream;
+    mediaRecorder = recorder;
+    audioResultPromise = nextAudioResult;
+    chunks = sessionChunks;
     recording = true;
     paused = false;
-    chunks = [];
     recStart = Date.now();
     if (!sessionStart) sessionStart = recStart;
     audioStartMs = recStart - sessionStart;
@@ -1189,20 +1436,13 @@
     toggleBtn.textContent = "⏸";
     toggleBtn.title = "Pause recording";
     toggleBtn.classList.add("vp-recording");
+    commandCenter?.setActivity("listening");
     updateClock();
     paintLooking();
-    anchorTimer = setInterval(() => (paintLooking(), logTrail(), pushTimeline("scroll")), 1200);
-    mediaRecorder = new MediaRecorder(mediaStream, mimeType());
-    mediaRecorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(chunks, { type: chunks[0]?.type || "audio/webm" });
-      const ext = /mp4/.test(blob.type) ? "mp4" : "webm";
-      (blob.size ? blobToB64(blob) : Promise.resolve(null)).then((b64) => {
-        stopResolve?.(b64 ? { audioB64: b64, ext } : null);
-        stopResolve = null;
-      });
-    };
-    mediaRecorder.start();
+    anchorTimer = setInterval(
+      () => (paintLooking(), logTrail(), pushTimeline("scroll")),
+      1200
+    );
   }
   function pauseResume() {
     if (!mediaRecorder) return;
@@ -1215,6 +1455,7 @@
       toggleBtn.title = "Resume recording";
       toggleBtn.classList.remove("vp-recording");
       trace("record.pause", { ms: Date.now() - recStart });
+      commandCenter?.setActivity(null);
       logRow("❚❚ paused", { cls: "milestone", ts: Date.now() - recStart });
     } else {
       paused = false;
@@ -1225,21 +1466,31 @@
       toggleBtn.title = "Pause recording";
       toggleBtn.classList.add("vp-recording");
       trace("record.resume", { ms: Date.now() - recStart });
+      commandCenter?.setActivity("listening");
       logRow("● resumed", { cls: "milestone", ts: Date.now() - recStart });
     }
     updateClock();
     paintLooking();
   }
   function stopAndGetAudio() {
-    return new Promise((resolve) => {
-      if (!mediaRecorder || mediaRecorder.state === "inactive") return resolve(null);
-      stopResolve = resolve;
-      recording = false;
-      paused = false;
-      clearInterval(anchorTimer);
-      try { mediaRecorder.stop(); } catch { resolve(null); }
-      mediaStream?.getTracks().forEach((t) => t.stop());
-    });
+    if (!mediaRecorder) {
+      mediaStream?.getTracks().forEach((track) => track.stop());
+      mediaStream = null;
+      return Promise.resolve(null);
+    }
+    const result = audioResultPromise || Promise.resolve(null);
+    recording = false;
+    paused = false;
+    clearInterval(anchorTimer);
+    if (mediaRecorder.state !== "inactive") {
+      try {
+        mediaRecorder.stop();
+      } catch {
+        return Promise.resolve(null);
+      }
+    }
+    mediaStream?.getTracks().forEach((t) => t.stop());
+    return result;
   }
   function blobToB64(blob) {
     return new Promise((resolve) => {
@@ -1257,7 +1508,7 @@
   // (survives a tab refresh, a crash, even a browser restart), only clearing it
   // once the agent confirms a result. A failed dispatch is retryable —
   // no re-recording from zero.
-  const PENDING_KEY = `voicepr:pending:${prUrl}`;
+  const pendingKey = (targetPr = prUrl) => `voicepr:pending:${targetPr}`;
   // Companion marker: set the moment the agent accepts the hand-off. Its
   // presence is what lets recovery tell
   // "handed off, awaiting result" apart from "saved but never sent" — the saved
@@ -1265,25 +1516,44 @@
   // disconnecting, so a reload that races the terminal event leaves the bundle
   // key set even though the work was in fact sent (#46). Cleared with the bundle
   // on the terminal result.
-  const HANDOFF_KEY = `voicepr:handedoff:${prUrl}`;
+  const handoffKey = (targetPr = prUrl) => `voicepr:handedoff:${targetPr}`;
   function savePending(bundle) {
-    try { chrome.storage?.local?.set({ [PENDING_KEY]: { ...bundle, savedAt: Date.now() } }); } catch {}
+    try {
+      chrome.storage?.local?.set({
+        [pendingKey(bundle.prRef)]: { ...bundle, savedAt: Date.now() },
+      });
+    } catch {}
   }
-  function markHandedOff(agentId) {
-    try { chrome.storage?.local?.set({ [HANDOFF_KEY]: { handedOff: true, agentId: agentId || null, at: Date.now() } }); } catch {}
+  function markHandedOff(agentId, targetPr = prUrl) {
+    try {
+      chrome.storage?.local?.set({
+        [handoffKey(targetPr)]: {
+          handedOff: true,
+          agentId: agentId || null,
+          at: Date.now(),
+        },
+      });
+    } catch {}
   }
-  function clearPending() {
-    try { chrome.storage?.local?.remove([PENDING_KEY, HANDOFF_KEY]); } catch {}
+  function clearPending(targetPr = prUrl) {
+    try {
+      chrome.storage?.local?.remove([
+        pendingKey(targetPr),
+        handoffKey(targetPr),
+      ]);
+    } catch {}
   }
-  function loadPending() {
+  function loadPending(targetPr = prUrl) {
     return new Promise((resolve) => {
-      try { chrome.storage?.local?.get(PENDING_KEY, (o) => resolve(o?.[PENDING_KEY] || null)); }
+      const key = pendingKey(targetPr);
+      try { chrome.storage?.local?.get(key, (o) => resolve(o?.[key] || null)); }
       catch { resolve(null); }
     });
   }
-  function loadHandoff() {
+  function loadHandoff(targetPr = prUrl) {
     return new Promise((resolve) => {
-      try { chrome.storage?.local?.get(HANDOFF_KEY, (o) => resolve(o?.[HANDOFF_KEY] || null)); }
+      const key = handoffKey(targetPr);
+      try { chrome.storage?.local?.get(key, (o) => resolve(o?.[key] || null)); }
       catch { resolve(null); }
     });
   }
@@ -1303,13 +1573,19 @@
     }
     try {
       const port = chrome.runtime.connect({ name: "dispatch" });
-      activePort = port;
+      const isCurrentPr = () => prUrl === bundle.prRef;
+      if (isCurrentPr()) activePort = port;
       trace("dispatch.send", { hasAudio: !!bundle.audioB64, typed: bundle.typedSegments?.length || 0 });
       port.onMessage.addListener((ev) => {
         if (ev.stage === "_end") {
           trace("dispatch.port-end", { gotResult });
           try { port.disconnect(); } catch {}
-          if (!gotResult) offerRetry(bundle, "the bridge closed before finishing — is the voice-pr server up?");
+          if (activePort === port) activePort = null;
+          if (!gotResult && isCurrentPr())
+            offerRetry(
+              bundle,
+              "the bridge closed before finishing — is the voice-pr server up?"
+            );
           return;
         }
         // An agent run now exists server-side. Persist that BEFORE any terminal
@@ -1317,17 +1593,19 @@
         // races the result doesn't fall back to the false "never dispatched"
         // recovery — resending here would start duplicate work.
         if (ev.stage === "agent-running") {
-          markHandedOff(ev.detail?.agentId);
+          markHandedOff(ev.detail?.agentId, bundle.prRef);
         }
         if (ev.stage === "result" || ev.stage === "done") {
           gotResult = true;
-          clearPending(); // the agent completed; safe to forget
+          clearPending(bundle.prRef); // the agent completed; safe to forget
         }
-        onEvent(ev);
+        if (isCurrentPr()) onEvent(ev);
+        else trace("dispatch.stale-ui", { pr: bundle.prRef, stage: ev.stage });
       });
       port.postMessage(bundle);
     } catch (e) {
-      offerRetry(bundle, e.message);
+      if (prUrl === bundle.prRef) offerRetry(bundle, e.message);
+      else trace("dispatch.stale-error", { pr: bundle.prRef });
     }
   }
 
@@ -1430,6 +1708,7 @@
 
   function offerRetry(bundle, why) {
     dispatched = false; // let the user try again without re-recording
+    commandCenter?.setActivity(null);
     finishCommitTimer("failed");
     traceError("dispatch.failed", why);
     const kb = Math.round(((bundle.audioB64?.length || 0) * 0.75) / 1024);
@@ -1461,6 +1740,7 @@
   sendBtn.addEventListener("click", async () => {
     if (dispatched) return;
     dispatched = true;
+    commandCenter?.setActivity("thinking");
     const recordingStoppedAt = Date.now();
     startCommitTimer(recordingStoppedAt);
     trace("dispatch.click", { typed: segments.length, timeline: timeline.length });
@@ -1485,8 +1765,16 @@
       "You can close this tab — transcription + the warm agent run on the server; your recording is saved locally until it confirms.",
       { cls: "reassure" }
     );
+    const dispatchContext = {
+      prRef: prUrl,
+      sessionId,
+      recordingStoppedAt,
+      typedSegments: segments.map((segment) => ({ ...segment })),
+      timeline: timeline.map((entry) => ({ ...entry })),
+      audioStartMs,
+    };
     const audio = await stopAndGetAudio();
-    const bundle = { prRef: prUrl, sessionId, recordingStoppedAt, typedSegments: segments, timeline, audioStartMs, ...(audio || {}) };
+    const bundle = { ...dispatchContext, ...(audio || {}) };
     savePending(bundle); // durable BEFORE the first network attempt
     sendBundle(bundle);
   });
@@ -1632,6 +1920,8 @@
 
   function done(r) {
     const ok = r.status === "done";
+    dispatched = false;
+    commandCenter?.setActivity(null);
     const latency = r.metrics?.stopToPatchMs;
     finishCommitTimer(
       ok && r.commits?.length ? "landed" : ok ? "no-commit" : "failed",
@@ -1689,13 +1979,19 @@
   // idle we leave the quiet pill; its badge (and the toolbar badge) still
   // reflect work in flight on other PRs.
   function initSurface() {
+    const surfacePr = prUrl;
     schedulePagePreparation();
     loadFleet((jobs) => {
+      if (prUrl !== surfacePr) return;
       updatePillBadge(jobs);
-      const job = jobs[prUrl] || null;
-      Promise.all([loadPending(), loadHandoff()]).then(([pending, handoff]) => {
+      const job = jobs[surfacePr] || null;
+      Promise.all([
+        loadPending(surfacePr),
+        loadHandoff(surfacePr),
+      ]).then(([pending, handoff]) => {
+        if (prUrl !== surfacePr) return;
         const decision = window.VoicePrHub.classifyPrState({ job, pending, handoff });
-        if (decision.state === "idle") return; // quiet pill; nothing to surface
+        if (decision.state === "idle") return; // quiet goblin; nothing to surface
         if (pending) sessionId = pending.sessionId || sessionId; // tag recovery traces
         trace("recover.found", {
           mode: decision.state,
@@ -1706,5 +2002,38 @@
       });
     });
   }
-  initSurface();
+  // initSurface(); is deferred until commandCenter.bindPr has restored this PR.
+
+  function rebindForNavigation(nextHref) {
+    const next = window.DiffyState.parsePrUrl(nextHref);
+    if (!next) {
+      prPageVisible = false;
+      commandCenter.unbindPr();
+      teardown();
+      root.hidden = true;
+      return;
+    }
+    root.hidden = false;
+    const returningToPr = !prPageVisible;
+    prPageVisible = true;
+    if (next.prUrl === prUrl && !returningToPr) {
+      placeSurfaces();
+      return;
+    }
+    teardown();
+    panel.hidden = true;
+    hubPanel.hidden = true;
+    pillOpen.setAttribute("aria-expanded", "false");
+    prContext = next;
+    prUrl = next.prUrl;
+    trace("diffy.pr.rebind", { pr: prUrl });
+    pageLoadedAt = Date.now();
+    pagePreparation = null;
+    pagePreparationRequested = false;
+    sessionId = null;
+    commandCenter.bindPr(next).then(initSurface);
+  }
+
+  window.DiffyLauncher.observeNavigation(window, rebindForNavigation);
+  commandCenter.bindPr(prContext).then(initSurface);
 })();

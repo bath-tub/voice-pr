@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildExecutionPrompt } from "../lib/prompt.js";
+import { buildExecutionPrompt, buildQaPrompt } from "../lib/prompt.js";
 
 const pr = {
   owner: "bath",
@@ -68,4 +68,16 @@ test("single hot turn interprets fuzzy speech, confidence-gates, edits, tests, a
   assert.match(body, /Inspect only the anchored targets/);
   assert.match(body, /do not\s+perform broad PR/i);
   assert.doesNotMatch(body, /context you already analyzed/);
+});
+
+test("Q&A requires concise inline evidence citations", () => {
+  const body = buildQaPrompt({
+    pr,
+    question: "What changed here?",
+    anchor: { file: "lib/net.js", line: 12, snippet: "retry(request)" },
+    workspaceHead: "abc123",
+  });
+  assert.match(body, /exactly one concise line/i);
+  assert.match(body, /\[path:line\]/);
+  assert.match(body, /\[PR #number\]/);
 });

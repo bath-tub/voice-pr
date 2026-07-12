@@ -3,6 +3,8 @@
 // fetch localhost directly, so the extension's background worker proxies to
 // these endpoints, which pre-warm a Cursor agent and transcribe locally.
 import { createServer } from "node:http";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   runSession,
   getContext,
@@ -14,6 +16,8 @@ import { agentRuntime } from "./lib/agent.js";
 import { run } from "./lib/exec.js";
 import { saveAudio, saveJson } from "./lib/archive.js";
 import { withTracer } from "./lib/trace.js";
+import { askQa, qaRuntime } from "./lib/qa.js";
+import { createFollowupIssues } from "./lib/followups.js";
 
 const PORT = Number(process.env.PORT || 4100);
 const HOST = "127.0.0.1";
@@ -32,33 +36,42 @@ function cors(req, res) {
   res.setHeader("access-control-allow-private-network", "true");
 }
 
-const server = createServer(async (req, res) => {
-  try {
-    if (!allowedOrigin(req.headers.origin)) {
-      res.writeHead(403, { "content-type": "text/plain" });
-      return res.end("forbidden origin");
+export function createBridgeServer({
+  askQaFn = askQa,
+  createFollowupIssuesFn = createFollowupIssues,
+} = {}) {
+  return createServer(async (req, res) => {
+    try {
+      if (!allowedOrigin(req.headers.origin)) {
+        res.writeHead(403, { "content-type": "text/plain" });
+        return res.end("forbidden origin");
+      }
+      cors(req, res);
+      const url = new URL(req.url, "http://localhost");
+      if (req.method === "OPTIONS") return res.writeHead(204).end();
+      if (req.method === "GET" && url.pathname === "/api/context")
+        return await handleContext(url, res);
+      if (req.method === "GET" && url.pathname === "/api/preflight")
+        return await handlePreflight(res);
+      if (req.method === "POST" && url.pathname === "/api/prepare")
+        return await handlePrepare(req, res);
+      if (req.method === "POST" && url.pathname === "/api/warm")
+        return await handleWarm(req, res);
+      if (req.method === "POST" && url.pathname === "/api/transcribe")
+        return await handleTranscribe(req, res);
+      if (req.method === "POST" && url.pathname === "/api/dispatch")
+        return await handleDispatch(req, res);
+      if (req.method === "POST" && url.pathname === "/api/qa")
+        return await handleQa(req, res, askQaFn);
+      if (req.method === "POST" && url.pathname === "/api/followups/issues")
+        return await handleFollowupIssues(req, res, createFollowupIssuesFn);
+      res.writeHead(404).end("not found");
+    } catch (e) {
+      if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
+      res.end(`error: ${e.message}`);
     }
-    cors(req, res);
-    const url = new URL(req.url, "http://localhost");
-    if (req.method === "OPTIONS") return res.writeHead(204).end();
-    if (req.method === "GET" && url.pathname === "/api/context")
-      return await handleContext(url, res);
-    if (req.method === "GET" && url.pathname === "/api/preflight")
-      return await handlePreflight(res);
-    if (req.method === "POST" && url.pathname === "/api/prepare")
-      return await handlePrepare(req, res);
-    if (req.method === "POST" && url.pathname === "/api/warm")
-      return await handleWarm(req, res);
-    if (req.method === "POST" && url.pathname === "/api/transcribe")
-      return await handleTranscribe(req, res);
-    if (req.method === "POST" && url.pathname === "/api/dispatch")
-      return await handleDispatch(req, res);
-    res.writeHead(404).end("not found");
-  } catch (e) {
-    if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
-    res.end(`error: ${e.message}`);
-  }
-});
+  });
+}
 
 // Combined, fire-and-forget path for the extension: transcribe the recording,
 // then send anchored comments to the agent warmed at record start.
@@ -338,6 +351,77 @@ async function handleContext(url, res) {
   });
 }
 
+async function handleQa(req, res, askQaFn) {
+  const receivedAt = Date.now();
+  const input = JSON.parse((await readBody(req)) || "{}");
+  const sid = `qa-${String(input.threadId || input.sessionId || Date.now()).replace(
+    /[^\w.-]/g,
+    "_"
+  )}`;
+  return withTracer(sid, { prRef: input.prRef }, async (tracer) => {
+    try {
+      await tracer.markLatest({ prRef: input.prRef, kind: "qa" });
+      tracer.event("bridge.qa.start", {
+        threadId: input.threadId || input.sessionId || null,
+        anchored: !!input.anchor,
+        detailLevel: input.detailLevel || "concise",
+      });
+      const answer = await askQaFn(input, (stage, detail) =>
+        tracer.event(stage, detail || {})
+      );
+      const result = {
+        ...answer,
+        metrics: {
+          ...(answer.metrics || {}),
+          qaMs: Date.now() - receivedAt,
+        },
+      };
+      tracer.event("bridge.qa.done", {
+        threadId: result.threadId,
+        agentId: result.agentId,
+        runId: result.runId,
+        qaMs: result.metrics.qaMs,
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (error) {
+      const rec = tracer.error("bridge.qa.error", error);
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({ error: error.message, code: rec.code, loc: rec.loc })
+      );
+    }
+  });
+}
+
+async function handleFollowupIssues(req, res, createFollowupIssuesFn) {
+  const input = JSON.parse((await readBody(req)) || "{}");
+  const sid = `followups-${Date.now()}`;
+  return withTracer(sid, { prRef: input.prRef }, async (tracer) => {
+    try {
+      await tracer.markLatest({ prRef: input.prRef, kind: "followups" });
+      tracer.event("bridge.followups.start", {
+        confirmed: input.confirmed === true,
+        items: Array.isArray(input.items) ? input.items.length : 0,
+      });
+      const result = await createFollowupIssuesFn(input);
+      tracer.event("bridge.followups.done", {
+        created: result.results.filter((item) => item.status === "created").length,
+        existing: result.results.filter((item) => item.status === "existing").length,
+        failed: result.results.filter((item) => item.status === "error").length,
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (error) {
+      const rec = tracer.error("bridge.followups.error", error);
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({ error: error.message, code: rec.code, loc: rec.loc })
+      );
+    }
+  });
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let b = "";
@@ -367,36 +451,44 @@ function allowedOrigin(origin) {
   return !origin || origin.startsWith("chrome-extension://");
 }
 
-// Fault isolation: a single in-flight session spawns many child processes
-// (gh, git, ffmpeg, whisper, Cursor agent) over several minutes. Before, ANY async error
-// with no local catch — a child stdin EPIPE, a broken pipe, a stray rejection —
-// killed the whole process and every other in-flight session with it. Log and
-// stay up instead; the offending request already reports its own error, and the
-// supervisor (scripts/serve.js) is the backstop for a truly fatal state.
-process.on("uncaughtException", (e) => {
-  console.error(`[uncaughtException] ${e?.stack || e}`);
-});
-process.on("unhandledRejection", (e) => {
-  console.error(`[unhandledRejection] ${e?.stack || e}`);
-});
+const isMain =
+  process.argv[1] &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
 
-server.on("error", (e) => {
-  if (e?.code === "EADDRINUSE") {
-    console.error(`\n  ✗ port ${PORT} is already in use — is voice-pr already running?\n`);
-    process.exit(1);
-  }
-  console.error(`[server] ${e?.stack || e}`);
-});
+if (isMain) {
+  const server = createBridgeServer();
 
-server.listen(PORT, HOST, () => {
-  console.log(`\n  🎙️  voice-pr bridge running → http://${HOST}:${PORT}\n`);
-  console.log("  Load the extension, open a PR's Files changed tab, and talk.\n");
-});
-
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.once(signal, async () => {
-    server.close();
-    await agentRuntime.shutdown();
-    process.exit(0);
+  // Fault isolation: one rejected child process must not kill other sessions.
+  process.on("uncaughtException", (e) => {
+    console.error(`[uncaughtException] ${e?.stack || e}`);
   });
+  process.on("unhandledRejection", (e) => {
+    console.error(`[unhandledRejection] ${e?.stack || e}`);
+  });
+
+  server.on("error", (e) => {
+    if (e?.code === "EADDRINUSE") {
+      console.error(
+        `\n  ✗ port ${PORT} is already in use — is voice-pr already running?\n`
+      );
+      process.exit(1);
+    }
+    console.error(`[server] ${e?.stack || e}`);
+  });
+
+  server.listen(PORT, HOST, () => {
+    console.log(`\n  🎙️  voice-pr bridge running → http://${HOST}:${PORT}\n`);
+    console.log("  Load the extension, open a PR's Files changed tab, and talk.\n");
+  });
+
+  let shuttingDown = false;
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      await new Promise((resolveClose) => server.close(resolveClose));
+      await Promise.all([agentRuntime.shutdown(), qaRuntime.shutdown()]);
+      process.exit(0);
+    });
+  }
 }

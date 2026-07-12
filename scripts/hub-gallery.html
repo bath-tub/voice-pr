@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>voice-pr · hub state gallery</title>
+    <title>Diffy Command Center · state gallery</title>
     <!-- The real component CSS. hub.js renders the real components. Everything
          below is the actual extension UI, driven by fixtures — not a mockup. -->
     <link rel="stylesheet" href="../extension/content.css" />
@@ -53,15 +53,14 @@
     </style>
   </head>
   <body>
-    <h1>voice-pr — hub state gallery</h1>
+    <h1>Diffy Command Center — state gallery</h1>
     <p class="sub">
-      Every panel below is the <b>real extension UI</b>: <code>extension/hub.js</code>'s
-      <code>renderHub()</code> over fixture data, styled by <code>extension/content.css</code>.
-      This is the D3 + D1 build — the hub is the home, recording is one explicit tap,
-      and each state-matrix row lands on its own surface.
+      The original goblin is the single PR-scoped door. The command center keeps
+      Apply Changes, questions, follow-ups, and runs in one inward-opening surface.
     </p>
     <div class="grid" id="grid"></div>
 
+    <script src="../extension/diffy-state.js"></script>
     <script src="../extension/hub.js"></script>
     <script>
       const grid = document.getElementById("grid");
@@ -70,16 +69,53 @@
       // Build a hub panel frame around renderHub output for a given fixture.
       function hubPanel(state) {
         const panel = document.createElement("div");
-        panel.className = "vp-panel vp-hub-panel";
+        panel.className = "vp-panel vp-command-panel";
         const bar = document.createElement("header");
-        bar.className = "vp-bar";
+        bar.className = "vp-bar vp-diffy-bar";
         bar.innerHTML =
-          '<span class="vp-hub-title">🎙 voice-pr</span><span class="vp-bar-gap"></span>' +
+          '<button class="vp-icon vp-back">‹</button><span class="vp-hub-title">Runs</span><span class="vp-bar-gap"></span>' +
           '<button class="vp-icon vp-x">✕</button>';
         const body = document.createElement("div");
         body.className = "vp-hub-body";
         body.appendChild(window.VoicePrHub.renderHub(document, state));
         panel.append(bar, body);
+        return panel;
+      }
+
+      function goblin(badge = "") {
+        const wrap = document.createElement("div");
+        wrap.className = "vp-diffy-launcher-wrap";
+        wrap.style.position = "relative";
+        wrap.innerHTML = `<button class="vp-diffy-launcher" aria-label="Open Diffy Command Center">
+          <svg class="vp-diffy-goblin" viewBox="0 0 64 64" aria-hidden="true">
+            <path class="ear" d="M17 29 4 20l12 20M47 29l13-9-12 20"/>
+            <path class="head" d="M14 25c2-12 12-18 18-18s16 6 18 18l-3 22c-4 8-11 11-15 11s-11-3-15-11z"/>
+            <path class="brow" d="m21 28 8 2m14-2-8 2"/>
+            <circle class="eye" cx="24" cy="33" r="3"/><circle class="eye" cx="40" cy="33" r="3"/>
+            <path class="nose" d="m32 34-3 8 6-1"/><path class="mouth" d="M25 47c4 3 10 3 14 0"/>
+            <path class="tooth" d="m27 47 2 5 2-4m6 0 2 4 1-5"/>
+          </svg>${badge ? `<span class="vp-diffy-badge ${badge === "●" ? "listening" : "thinking"}">${badge}</span>` : ""}
+        </button>`;
+        return wrap;
+      }
+
+      function homePanel() {
+        const panel = document.createElement("div");
+        panel.className = "vp-panel vp-command-panel";
+        panel.innerHTML = `<header class="vp-bar vp-diffy-bar"><span class="vp-hub-title">Diffy Command Center</span><span class="vp-bar-gap"></span><button class="vp-icon">✕</button></header>
+          <div class="vp-hub-body">
+            <div class="vp-diffy-intro"><span class="vp-diffy-intro-mark">↳</span><div><strong>What are we doing?</strong><span>Everything here stays scoped to this PR.</span></div></div>
+            <div class="vp-diffy-commands">
+              ${[
+                ["⌁", "Apply changes", "Speak feedback while you move through the diff."],
+                ["?", "Ask Diffy", "Get a short answer about what is in front of you."],
+                ["✓", "Follow-ups", "2 open review notes."],
+                ["↗", "Runs", "Watch active and completed agent work."],
+              ].map(([icon, label, detail]) => `<button class="vp-diffy-command"><span class="vp-diffy-command-icon">${icon}</span><span><strong>${label}</strong><small>${detail}</small></span><span class="vp-diffy-command-arrow">›</span></button>`).join("")}
+              <button class="vp-diffy-command preview" disabled><span class="vp-diffy-command-icon">◇</span><span><strong>Review comments</strong><small>Preview — coming soon</small></span></button>
+              <button class="vp-diffy-command preview" disabled><span class="vp-diffy-command-icon">◇</span><span><strong>CI repair</strong><small>Preview — coming soon</small></span></button>
+            </div>
+          </div>`;
         return panel;
       }
 
@@ -101,21 +137,11 @@
         extra || {}
       );
 
-      // ---- pill surfaces (collapsed) -----------------------------------------
-      const pillIdle = document.createElement("div");
-      pillIdle.className = "vp-pill";
-      pillIdle.innerHTML =
-        '<button class="vp-pill-open">🎙️ Review with voice</button>' +
-        '<button class="vp-pill-rec" title="Record now">⏺</button>';
-      cell("Collapsed pill — idle", "pill", "The quiet resting state. Main target opens the hub; the ⏺ is the author's record deep-link.", pillIdle);
-
-      const pillBadge = document.createElement("div");
-      pillBadge.className = "vp-pill";
-      pillBadge.innerHTML =
-        '<button class="vp-pill-open">🎙️ Review with voice</button>' +
-        '<button class="vp-pill-rec" title="Record now">⏺</button>' +
-        '<span class="vp-pill-badge">3</span>';
-      cell("Collapsed pill — others busy", "pill · badge", "3 jobs in flight on other PRs. The badge (mirrored to the toolbar icon, D1) is the signal that survives a collapsed panel.", pillBadge);
+      // ---- collapsed mascot + command home -----------------------------------
+      cell("Diffy — idle", "launcher", "Draggable, edge-snapped, and deliberately quiet.", goblin());
+      cell("Diffy — listening", "launcher · active", "The collapsed badge keeps microphone activity visible.", goblin("●"));
+      cell("Diffy — thinking", "launcher · active", "Closing the panel does not lose the active screen or session.", goblin("…"));
+      cell("Command Center — home", "home", "A compact command list, not a generic card wall.", homePanel());
 
       // ---- hub states (the state matrix) -------------------------------------
       cell("Hub — zero PRs / idle", "state: idle",

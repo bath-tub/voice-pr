@@ -93,6 +93,65 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .catch((e) => sendResponse({ ok: false, error: String(e) }));
     return true;
   }
+  // Diffy Q&A is deliberately isolated from the Apply Changes dispatch port.
+  // A question can only reach /api/qa and therefore cannot create a coding run.
+  if (msg?.type === "diffy-qa") {
+    postJson("/api/qa", {
+      prRef: msg.prUrl,
+      threadId: msg.threadId || null,
+      question: msg.question,
+      anchor: msg.anchor || null,
+      priorTurns: Array.isArray(msg.priorTurns) ? msg.priorTurns : [],
+      detailLevel: msg.explain ? "expanded" : "concise",
+    })
+      .then((json) => sendResponse({ ok: !json.error, json }))
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  // Voice capture for Ask Diffy / Follow-ups reuses local transcription only.
+  // It never passes through /api/dispatch or the central coding-job registry.
+  if (msg?.type === "diffy-transcribe") {
+    postJson("/api/transcribe", {
+      audioB64: msg.audioB64,
+      ext: msg.ext,
+      timeline: [{ t: 0, src: "viewport", ...(msg.anchor || {}) }],
+      audioStartMs: 0,
+      sessionId: msg.sessionId,
+      prUrl: msg.prUrl,
+    })
+      .then((json) => sendResponse({ ok: !json.error, json }))
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  // External issue creation is batch-confirmed in the command center first.
+  // Slack is intentionally absent: Slack routing is copy-only in the tab.
+  if (msg?.type === "diffy-followup-issues") {
+    postJson("/api/followups/issues", {
+      prRef: msg.prUrl,
+      confirmed: true,
+      items: Array.isArray(msg.items)
+        ? msg.items.map((item) => ({
+            ...item,
+            clientItemId: item.clientItemId || item.id,
+            originalText: item.originalText || item.text,
+          }))
+        : [],
+    })
+      .then((json) => {
+        if (Array.isArray(json.results)) {
+          json.results = json.results.map((result) => ({
+            id: result.id || result.clientItemId,
+            status: result.status,
+            issueUrl: result.issueUrl || result.issue?.url || null,
+            issueNumber: result.issueNumber || result.issue?.number || null,
+            error: result.error || null,
+          }));
+        }
+        sendResponse({ ok: !json.error, json });
+      })
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
   // hub "jump" — focus the PR's existing tab, or open it if it's gone
   if (msg?.type === "focus-pr") {
     focusPr(msg.prUrl, msg.tabId)
@@ -111,6 +170,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 });
+
+async function postJson(path, body) {
+  const response = await fetch(`${BRIDGE}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let json;
+  try {
+    json = await response.json();
+  } catch {
+    json = { error: `Bridge returned ${response.status} without JSON` };
+  }
+  if (!response.ok && !json.error) json.error = `Bridge returned ${response.status}`;
+  return json;
+}
 
 async function getPreflight(force = false) {
   if (
