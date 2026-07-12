@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "serve": "node scripts/serve.js",
+    "prototype:actions": "python3 -m http.server 4173",
     "daemon:install": "bash scripts/daemon.sh install",
     "daemon:uninstall": "bash scripts/daemon.sh uninstall",
     "daemon:restart": "bash scripts/daemon.sh restart",
