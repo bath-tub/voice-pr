@@ -1,156 +1,25 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>voice-pr · Action framework demo</title>
-    <link rel="stylesheet" href="../extension/content.css" />
-    <style>
-      :root {
-        --vp-canvas: #0d1117; --vp-panel: #161b22; --vp-elev: #1c2128;
-        --vp-subtle: #21262d; --vp-border: #30363d; --vp-border-soft: #262c34;
-        --vp-text: #e6edf3; --vp-muted: #8b949e; --vp-faint: #6e7681;
-        --vp-accent: #6da2ff; --vp-accent-deep: #1f6feb; --vp-ok: #3fb950;
-        --vp-warn: #f85149; --vp-amber: #d29922;
-        --vp-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0; padding: 42px 42px 70px;
-        background:
-          radial-gradient(900px 500px at 14% -10%, rgba(47,111,235,.2), transparent 68%),
-          #080b10;
-        color: var(--vp-text);
-        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
-      .eyebrow { color: var(--vp-accent); font: 700 10px var(--vp-mono); letter-spacing: .12em; text-transform: uppercase; }
-      h1 { max-width: 780px; margin: 11px 0 10px; font-size: 43px; line-height: 1.02; letter-spacing: -.045em; }
-      .deck { max-width: 760px; margin: 0; color: var(--vp-muted); font-size: 15px; }
-      .flow {
-        display: grid; grid-template-columns: 1fr 42px 1fr 42px 1fr 42px 1fr;
-        align-items: center; gap: 8px; margin: 32px 0;
-      }
-      .flow-node { min-height: 92px; padding: 15px; border: 1px solid var(--vp-border); border-radius: 12px; background: rgba(22,27,34,.82); }
-      .flow-node b { display: block; margin-bottom: 6px; font-size: 12px; }
-      .flow-node span { color: var(--vp-muted); font-size: 11px; }
-      .flow-node i { display: inline-block; margin-bottom: 9px; color: var(--vp-accent); font: normal 10px var(--vp-mono); }
-      .arrow { color: var(--vp-faint); font-size: 20px; text-align: center; }
-      .gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: start; }
-      .cell { display: grid; gap: 10px; }
-      .caption { min-height: 53px; }
-      .caption b { display: block; margin-bottom: 3px; font-size: 12px; }
-      .caption span { color: var(--vp-muted); font-size: 11px; }
-      .stage {
-        min-height: 565px; padding: 18px; border: 1px solid #1d2633; border-radius: 15px;
-        background: radial-gradient(circle at 50% 0%, rgba(109,162,255,.05), transparent 55%), #0d1117;
-      }
-      #voicepr-root { position: static; font-size: 12px; }
-      #voicepr-root .vp-panel { position: static; width: 100%; height: 525px; animation: none; }
-      .demo-menu { position: static; width: 100%; margin-top: 10px; }
-      .panel-copy { padding: 13px; color: var(--vp-muted); font-size: 11px; }
-      .panel-copy strong { color: var(--vp-text); }
-      .vp-pipeline { display: grid; gap: 8px; padding: 13px; }
-      .demo-result { margin: 0 13px 13px; padding: 12px; border: 1px solid rgba(63,185,80,.35); border-radius: 9px; background: rgba(63,185,80,.07); }
-      .demo-result.warn { border-color: rgba(210,153,34,.45); background: rgba(210,153,34,.08); }
-      .demo-result .headline { font-weight: 650; font-size: 11px; }
-      .demo-result .sub { margin-top: 5px; color: var(--vp-muted); font-size: 10px; }
-      .demo-result .vp-action-summary { color: var(--vp-accent); }
-      .exception {
-        display: grid; grid-template-columns: 21px 1fr; gap: 8px;
-        margin-top: 10px; padding: 9px; border-radius: 8px;
-        background: rgba(210,153,34,.09); color: #e7c67e; font-size: 10px;
-      }
-      .action-frame { margin: 13px; padding: 12px; border: 1px solid var(--vp-border); border-radius: 9px; background: var(--vp-elev); }
-      .action-frame .kind { color: var(--vp-accent); font: 700 9px var(--vp-mono); text-transform: uppercase; }
-      .action-frame h3 { margin: 6px 0 8px; font-size: 12px; }
-      .action-frame dl { display: grid; grid-template-columns: 68px 1fr; gap: 5px; margin: 0; font-size: 9.5px; }
-      .action-frame dt { color: var(--vp-faint); }
-      .action-frame dd { margin: 0; color: var(--vp-muted); }
-      .permission-badge { margin-left: auto; padding: 3px 6px; border: 1px solid rgba(109,162,255,.3); border-radius: 5px; color: #b7c9e8; font: 9px var(--vp-mono); }
-      body.focus-permission { display: grid; min-height: 100vh; place-items: center; padding: 44px; }
-      body.focus-permission > :not(.gallery) { display: none; }
-      body.focus-permission .gallery { display: block; width: min(520px, 100%); }
-      body.focus-permission .cell:not(:first-child) { display: none; }
-      body.focus-permission .caption { min-height: auto; margin-bottom: 12px; }
-      body.focus-permission .stage { min-height: 600px; }
-      body.focus-permission #voicepr-root .vp-panel { height: 560px; }
-      @media (max-width: 1000px) { .gallery { grid-template-columns: 1fr; } .flow { grid-template-columns: 1fr; } .arrow { transform: rotate(90deg); } }
-    </style>
-  </head>
-  <body>
-    <div class="eyebrow">Working vertical slice · voice-pr</div>
-    <h1>Natural commentary becomes authorized Effects.</h1>
-    <p class="deck">The Action framework adds no new agent powers. It compiles situated speech into outcome-centered Actions, validates the requested Effects, and lets the existing harness enforce exactly what may leave the local workspace.</p>
-
-    <section class="flow" aria-label="Voice Action flow">
-      <div class="flow-node"><i>01 · evidence</i><b>Anchored Utterances</b><span>“This can be null. Don’t change the public API.”</span></div>
-      <div class="arrow">→</div>
-      <div class="flow-node"><i>02 · compilation</i><b>Outcome-centered Action</b><span>Confirm and resolve the null-handling risk.</span></div>
-      <div class="arrow">→</div>
-      <div class="flow-node"><i>03 · permission</i><b>Authorization Envelope</b><span>Local workspace, current PR, or broader configured scope.</span></div>
-      <div class="arrow">→</div>
-      <div class="flow-node"><i>04 · execution</i><b>Harness-owned Effects</b><span>Edit, validate, commit, push, and publish receipts.</span></div>
-    </section>
-
-    <div class="gallery" id="voicepr-root">
-      <section class="cell">
-        <div class="caption"><b>Permission is configuration</b><span>The scope never doubles as pipeline progress.</span></div>
-        <div class="stage">
-          <div class="vp-panel">
-            <header class="vp-bar"><span class="vp-hub-title">🎙 voice-pr</span><span class="vp-bar-gap"></span><span class="permission-badge">before recording</span></header>
-            <div class="vp-context"><span class="vp-chip brand">🎙 voice-pr</span><span class="vp-chip">PR #241</span><span class="vp-chip scope">scope · This pull request</span></div>
-            <div class="panel-copy"><strong>Voice-pr may act in</strong><br />Choose once, override per Session. Spoken commentary can narrow this scope, never expand it.</div>
-            <div class="vp-menu demo-menu">
-              <label class="vp-autonomy-control"><span>Voice-pr may act in</span><select aria-label="Authorization scope"><option>Read only</option><option>Local workspace</option><option selected>This pull request</option><option>This repository</option><option>Connected services</option></select></label>
-              <button class="vp-menu-item">🔧 Developer view</button>
-            </div>
-            <div class="action-frame"><div class="kind">Effective envelope</div><h3>Current pull request</h3><dl><dt>Allowed</dt><dd>Edit · validate · commit · push · PR update</dd><dt>Blocked</dt><dd>Repository issues · reviewers · connected services</dd></dl></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="cell">
-        <div class="caption"><b>Happy path stays compact</b><span>Action internals remain hidden after successful execution.</span></div>
-        <div class="stage">
-          <div class="vp-panel">
-            <header class="vp-bar"><span class="vp-hub-title">🎙 voice-pr</span><span class="vp-bar-gap"></span><span class="permission-badge">This pull request</span></header>
-            <div class="vp-context"><span class="vp-chip brand">🎙 voice-pr</span><span class="vp-chip">PR #241</span><span class="vp-chip ok">agent staged</span></div>
-            <div class="vp-pipeline">
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Transcribed audio</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Heard 3 comments</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Connected prepared agent</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">2 actions · authorized</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Pushed 1 commit</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Intent trail posting in background</span></div>
-            </div>
-            <div class="demo-result"><div class="headline">✅ Pushed 1 voice-driven commit to auth/header-normalization.</div><div class="sub">agent 7fa2 · stop → patch 11.8s</div><div class="sub vp-action-summary">2 actions · 5 effects authorized</div></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="cell">
-        <div class="caption"><b>Exceptions surface precisely</b><span>Independent work completes; only blocked Effects need attention.</span></div>
-        <div class="stage">
-          <div class="vp-panel">
-            <header class="vp-bar"><span class="vp-hub-title">🎙 voice-pr</span><span class="vp-bar-gap"></span><span class="permission-badge">Local workspace</span></header>
-            <div class="vp-context"><span class="vp-chip brand">🎙 voice-pr</span><span class="vp-chip">PR #241</span><span class="vp-chip scope">scope · Local workspace</span></div>
-            <div class="vp-pipeline">
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Transcribed audio</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Heard 3 comments</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Connected prepared agent</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">2 actions · 1 needs permission</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">Prepared 1 commit locally</span></div>
-              <div class="vp-step done"><span class="vp-step-mark"></span><span class="vp-step-label">No intent trail needed</span></div>
-            </div>
-            <div class="demo-result warn"><div class="headline">⚠️ Prepared 1 commit locally; publication needs permission.</div><div class="sub vp-action-summary">2 actions · 3 effects authorized · 1 needs permission</div><div class="exception"><span>↗</span><span><strong>Push current PR</strong><br />Start a PR-scoped Session, or inspect the retained workspace.</span></div></div>
-          </div>
-        </div>
-      </section>
-    </div>
-    <script>
-      if (new URLSearchParams(location.search).get("view") === "permission") {
-        document.body.classList.add("focus-permission");
-      }
-    </script>
-  </body>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>voice-pr · production action states</title>
+  <link rel="stylesheet" href="../extension/content.css" />
+  <style>
+    :root { --vp-canvas:#0d1117;--vp-panel:#161b22;--vp-elev:#1c2128;--vp-subtle:#21262d;--vp-border:#30363d;--vp-border-soft:#262c34;--vp-text:#e6edf3;--vp-muted:#8b949e;--vp-faint:#6e7681;--vp-accent:#4c8dff;--vp-accent-deep:#1f6feb;--vp-ok:#3fb950;--vp-warn:#f85149;--vp-amber:#d29922;--vp-mono:ui-monospace,"SF Mono",Menlo,monospace; }
+    *{box-sizing:border-box} body{margin:0;padding:52px 40px 80px;background:radial-gradient(800px 440px at 14% -8%,rgba(76,141,255,.2),transparent 70%),#080b10;color:var(--vp-text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.eyebrow{color:var(--vp-accent);font:700 10px var(--vp-mono);letter-spacing:.12em;text-transform:uppercase}h1{max-width:720px;margin:10px 0 8px;font-size:40px;line-height:1.04;letter-spacing:-.04em}.deck{max-width:690px;margin:0;color:var(--vp-muted)}.gallery{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px;margin-top:38px}.cell{display:grid;gap:10px}.caption b{display:block;font-size:12px}.caption span{color:var(--vp-muted);font-size:11px}.stage{min-height:430px;padding:22px;border:1px solid #1d2633;border-radius:16px;background:#0d1117}#voicepr-root{position:static}.stage .vp-panel{width:100%;height:382px;animation:none}.stage .vp-log{padding:14px}.stage .vp-result{margin:0}.scope-demo{padding:30px 14px}.scope-explainer{margin:18px 0;color:var(--vp-muted);font-size:12px}.scope-explainer strong{color:var(--vp-text)}.vp-context{min-height:42px}.vp-scope-control select{max-width:none}.vp-phase{margin:0}.vp-result-exception{display:grid}body.focus-permission{display:grid;min-height:100vh;place-items:center}body.focus-permission>:not(.gallery){display:none}body.focus-permission .gallery{display:block;width:min(520px,100%);margin:0}body.focus-permission .cell:not(:first-child){display:none}@media(max-width:850px){.gallery{grid-template-columns:1fr}body{padding-inline:18px}}
+  </style>
+</head>
+<body>
+  <div class="eyebrow">Production classes · PR #64</div>
+  <h1>One surface, four legible moments.</h1>
+  <p class="deck">Authorization is visible before dispatch. During work, one human-readable phase replaces the machine checklist. The final receipt replaces the working state.</p>
+  <main class="gallery" id="voicepr-root">
+    <section class="cell"><div class="caption"><b>Permission</b><span>First-class, labelled, and session-local.</span></div><div class="stage"><div class="vp-panel"><header class="vp-bar"><span class="vp-hub-title">🎙 voice-pr</span><span class="vp-bar-gap"></span><span class="vp-chip">PR #64</span></header><div class="vp-context"><span class="vp-chip brand">bath/voice-pr</span><span class="vp-chip ok">agent ready</span></div><div class="vp-scope-bar"><label class="vp-scope-control"><span class="vp-scope-label">Scope</span><select><option>Read only</option><option>Local workspace</option><option selected>This pull request</option><option>This repository · this session</option></select></label><span class="vp-scope-note">For this session only</span></div><div class="scope-demo"><div class="scope-explainer"><strong>Voice-pr can edit, validate, commit, and update this PR.</strong><br>Spoken feedback may narrow this scope, never expand it.</div><button class="vp-send">Start recording</button></div></div></div></section>
+    <section class="cell"><div class="caption"><b>Working</b><span>A live phase, not six equal checklist rows.</span></div><div class="stage"><div class="vp-panel"><header class="vp-bar"><span class="vp-hub-title">🎙 voice-pr</span><span class="vp-bar-gap"></span><span class="vp-clock waiting">commit 0:08</span></header><div class="vp-context"><span class="vp-chip brand">bath/voice-pr</span><span class="vp-chip">PR #64</span></div><div class="vp-scope-bar"><label class="vp-scope-control"><span class="vp-scope-label">Scope</span><select><option selected>This pull request</option></select></label><span class="vp-scope-note">For this session only</span></div><div class="vp-log"><div class="vp-phase working" role="status"><span class="vp-phase-spinner"></span><div class="vp-phase-copy"><div class="vp-phase-name">Applying</div><div class="vp-phase-title">Making and validating the changes…</div><div class="vp-phase-detail">You can close this tab. Your recording stays local until the run confirms.</div></div></div></div></div></div></section>
+    <section class="cell"><div class="caption"><b>Success</b><span>The quiet receipt replaces all progress content.</span></div><div class="stage"><div class="vp-panel"><header class="vp-bar"><span class="vp-hub-title">🎙 voice-pr</span><span class="vp-bar-gap"></span><span class="vp-clock landed">commit 0:12 ✓</span></header><div class="vp-context"><span class="vp-chip brand">bath/voice-pr</span><span class="vp-chip">PR #64</span></div><div class="vp-scope-bar"><label class="vp-scope-control"><span class="vp-scope-label">Scope</span><select><option selected>This pull request</option></select></label><span class="vp-scope-note">For this session only</span></div><div class="vp-log"><div class="vp-result ok"><div class="headline">✓ Fixed null handling and pushed one commit.</div><div class="sub">agent 7fa2 · stop → patch 11.8s</div><a class="vp-link">see the comment on the PR →</a><button class="vp-send">Refresh PR to see commits</button></div></div></div></div></section>
+    <section class="cell"><div class="caption"><b>Blocked</b><span>Exact effect, retained work, and one next action.</span></div><div class="stage"><div class="vp-panel"><header class="vp-bar"><span class="vp-hub-title">🎙 voice-pr</span><span class="vp-bar-gap"></span><span class="vp-clock landed">commit 0:12 ✓</span></header><div class="vp-context"><span class="vp-chip brand">bath/voice-pr</span><span class="vp-chip">PR #64</span></div><div class="vp-scope-bar"><label class="vp-scope-control"><span class="vp-scope-label">Scope</span><select><option selected>Local workspace</option></select></label><span class="vp-scope-note">For this session only</span></div><div class="vp-log"><div class="vp-result warn"><div class="headline">! Prepared one commit locally.</div><div class="sub">agent 7fa2 · stop → patch 11.8s</div><div class="vp-result-exception"><strong>Push this pull request was not authorized.</strong><span>Your completed work remains in the local workspace.</span></div><button class="vp-send">Use PR scope next session</button></div></div></div></div></section>
+  </main>
+  <script>if(new URLSearchParams(location.search).get('view')==='permission')document.body.classList.add('focus-permission')</script>
+</body>
 </html>

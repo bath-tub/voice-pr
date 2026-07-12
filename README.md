@@ -43,9 +43,11 @@ configured scope, owns authenticated publication, and refuses to push when the
 agent skips compilation.
 
 The extension defaults to the current behavior: voice-pr may edit, test, commit,
-push to the current PR, and post the intent trail. The overflow menu can narrow
-or expand the effective scope from read-only through configured connected
-services. Spoken commentary can narrow that scope, but never expand it.
+push to the current PR, and post the intent trail. A visible, labelled Scope
+control can narrow or expand the effective envelope from read-only through
+connected services. Scope is reset for every recording session; broader access
+is explicitly labelled and never silently becomes a later session's default.
+Spoken commentary can narrow that scope, but never expand it.
 
 Action history, Operation provenance, Effect receipts, transcripts, and raw audio
 remain user-local. GitHub remains the collaboration surface; successful runs show
@@ -60,6 +62,11 @@ surfaced explicitly.
 
 Run the interactive gallery locally with `npm run demo:action-framework`, then
 open `http://127.0.0.1:4173/scripts/action-framework-gallery.html`.
+
+The throwaway reimagining prototype lives at
+`http://127.0.0.1:4173/scripts/action-framework-reimagined.html?variant=A`.
+Use the floating arrows (or the keyboard arrow keys) to compare variants A–C;
+the small state control exercises idle, working, success, and blocked.
 
 ## Success metric
 
