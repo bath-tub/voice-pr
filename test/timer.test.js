@@ -80,7 +80,7 @@ test("capture UI wires stop-to-commit timing before content script startup", () 
   );
   assert.match(
     content,
-    /case "agent-finished":\s+finishCommitTimer\(d\.commits \? "landed" : "no-commit"\)/
+    /case "agent-finished":\s+finishCommitTimer\(d\.commits && d\.published \? "landed" : "no-commit"\)/
   );
   assert.match(content, /r\.metrics\?\.stopToPatchMs/);
 });

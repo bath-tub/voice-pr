@@ -23,6 +23,8 @@ Chrome extension
   record stops  ──► POST /api/dispatch
                     local Whisper transcription
                     timestamp → file:line anchoring
+                    compile commentary → validated Action Plan
+                    apply the configured authorization envelope
                     one focused agent turn interprets + edits + tests
                     commit + push to PR head
                     bridge posts intent-trail comment asynchronously
@@ -31,6 +33,33 @@ Chrome extension
 There is no orchestrator, work-item queue, mayor, polecat, refinery, or direct
 LLM call. Page load prepares deterministic context, record start pays only agent
 setup, and record stop sends the anchored speech for a single inference turn.
+
+## Voice Action framework
+
+The warmed agent must register a typed Action Plan before publication. Actions
+describe independently resolvable outcomes; Effects describe the existing tools
+used to realize them. The local harness validates every Effect against the user's
+configured scope, owns authenticated publication, and refuses to push when the
+agent skips compilation.
+
+The extension defaults to the current behavior: voice-pr may edit, test, commit,
+push to the current PR, and post the intent trail. The overflow menu can narrow
+or expand the effective scope from read-only through configured connected
+services. Spoken commentary can narrow that scope, but never expand it.
+
+Action history, Operation provenance, Effect receipts, transcripts, and raw audio
+remain user-local. GitHub remains the collaboration surface; successful runs show
+only a compact Action summary, while permission and clarification exceptions are
+surfaced explicitly.
+
+### Demo
+
+![Action framework end-to-end states](docs/screenshots/action-framework-demo.png)
+
+![Authorization scope configuration](docs/screenshots/action-framework-permission.png)
+
+Run the interactive gallery locally with `npm run demo:action-framework`, then
+open `http://127.0.0.1:4173/scripts/action-framework-gallery.html`.
 
 ## Success metric
 
@@ -151,6 +180,7 @@ worktree is verified before push. It never force-pushes, rebases, or amends.
 | `VOICE_PR_WHISPER_BIN` | `whisper-cli` | whisper.cpp binary |
 | `VOICE_PR_WHISPER_MODEL` | `~/.cache/whisper/ggml-large-v3-turbo-q5_0.bin` | Model |
 | `VOICE_PR_ARCHIVE_DIR` | `~/.voice-pr/sessions` | Audio, transcripts, results, traces |
+| `VOICE_PR_ACTION_STORE_DIR` | `~/.voice-pr/actions` | User-local Action projections, Operations, and Effect receipts |
 
 ## Validation and diagnostics
 

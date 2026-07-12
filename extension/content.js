@@ -296,6 +296,16 @@
           <div class="vp-menu-wrap">
             <button id="vp-menu-btn" class="vp-icon" title="More" aria-haspopup="true" aria-expanded="false">⋯</button>
             <div id="vp-menu" class="vp-menu" role="menu" hidden>
+              <label class="vp-autonomy-control">
+                <span>Voice-pr may act in</span>
+                <select id="vp-autonomy" aria-label="Voice-pr authorization scope">
+                  <option value="read_only">Read only</option>
+                  <option value="local_workspace">Local workspace</option>
+                  <option value="current_pr">This pull request</option>
+                  <option value="current_repo">This repository</option>
+                  <option value="connected_services">Connected services</option>
+                </select>
+              </label>
               <button id="vp-dev-btn" class="vp-menu-item" role="menuitemcheckbox" title="developer view — mouse/scroll attention tracking, the live capture feed + most-attended HUD, and the bridge→whisper→gh→Cursor-agent preflight (off by default; default is a clean voice-only panel)">🔧 Developer view</button>
               <button id="vp-gaze-btn" class="vp-menu-item" role="menuitemcheckbox" title="experimental: on-device webcam eye tracking (video never leaves your machine)" hidden>👁 Eye tracking</button>
             </div>
@@ -366,6 +376,7 @@
     clockEl = $("#vp-clock"),
     menuBtn = $("#vp-menu-btn"),
     menuEl = $("#vp-menu"),
+    autonomySelect = $("#vp-autonomy"),
     readyBtn = $("#vp-ready-btn"),
     readyPop = $("#vp-ready-pop"),
     statusEl = $("#vp-status"),
@@ -374,6 +385,20 @@
     hudAnchorEl = $("#vp-hud-anchor"),
     hudFeedEl = $("#vp-hud-feed"),
     hudTopEl = $("#vp-hud-topn");
+
+  const AUTONOMY_KEY = "voicepr:autonomy";
+  const savedAutonomy = localStorage.getItem(AUTONOMY_KEY);
+  autonomySelect.value = [...autonomySelect.options].some(
+    (option) => option.value === savedAutonomy
+  )
+    ? savedAutonomy
+    : "current_pr";
+  autonomySelect.addEventListener("change", () => {
+    localStorage.setItem(AUTONOMY_KEY, autonomySelect.value);
+    setContextChips();
+  });
+  const autonomyLabel = () =>
+    autonomySelect.options[autonomySelect.selectedIndex]?.textContent || "This pull request";
 
   // ---------- overflow menu (holds dev + gaze) --------------------------------
   function closeMenu() {
@@ -400,7 +425,10 @@
   const chip = (text, cls = "") =>
     `<span class="vp-chip${cls ? " " + cls : ""}">${escapeHtml(text)}</span>`;
   function setContextChips() {
-    ctxEl.innerHTML = chip("🎙 voice-pr", "brand") + chip(`PR #${m[3]}`);
+    ctxEl.innerHTML =
+      chip("🎙 voice-pr", "brand") +
+      chip(`PR #${m[3]}`) +
+      chip(`scope · ${autonomyLabel()}`, "scope");
   }
 
   // ---------- control-bar clock ----------------------------------------------
@@ -1101,6 +1129,7 @@
         chip("🎙 voice-pr", "brand"),
         chip(`PR #${pagePreparation.pr.number}`),
         chip(pagePreparation.pr.branch),
+        chip(`scope · ${autonomyLabel()}`, "scope"),
       ];
       if (pagePreparation.jiraKey)
         bits.push(chip(`🎫 ${pagePreparation.jiraKey}`, "tk"));
@@ -1137,6 +1166,7 @@
           chip("🎙 voice-pr", "brand"),
           chip(`PR #${c.pr.number}`),
           chip(c.pr.branch),
+          chip(`scope · ${autonomyLabel()}`, "scope"),
         ];
         if (c.jiraKey) bits.push(chip(`🎫 ${c.jiraKey}`, "tk"));
         if (c.checksSummary)
@@ -1486,7 +1516,16 @@
       { cls: "reassure" }
     );
     const audio = await stopAndGetAudio();
-    const bundle = { prRef: prUrl, sessionId, recordingStoppedAt, typedSegments: segments, timeline, audioStartMs, ...(audio || {}) };
+    const bundle = {
+      prRef: prUrl,
+      sessionId,
+      recordingStoppedAt,
+      autonomyLevel: autonomySelect.value,
+      typedSegments: segments,
+      timeline,
+      audioStartMs,
+      ...(audio || {}),
+    };
     savePending(bundle); // durable BEFORE the first network attempt
     sendBundle(bundle);
   });
@@ -1502,7 +1541,7 @@
     { id: "transcribe", idle: "Transcribe audio", doing: "Transcribing audio…" },
     { id: "comments", idle: "Detect comments", doing: "Listening for comments…" },
     { id: "context", idle: "Connect prepared agent", doing: "Connecting prepared agent…" },
-    { id: "interpret", idle: "Interpret requests", doing: "Interpreting requests…" },
+    { id: "interpret", idle: "Compile actions", doing: "Compiling actions…" },
     { id: "work", idle: "Edit, validate & push", doing: "Agent editing and validating…" },
     { id: "trail", idle: "Post intent trail", doing: "Posting intent trail…" },
   ];
@@ -1601,16 +1640,32 @@
         pipe.activate("interpret");
         break;
       case "agent-running":
-        pipe.complete("interpret");
+        pipe.note("interpret", "Compiling actions…");
+        break;
+      case "actions-compiled":
+        pipe.complete(
+          "interpret",
+          `${plural(d.totalActions ?? 0, "action")} · ${d.blockedEffects ? `${d.blockedEffects} ${d.blockedEffects === 1 ? "needs" : "need"} permission` : "authorized"}`
+        );
         pipe.activate("work");
         break;
       case "agent-pushing":
         pipe.note("work", `Pushing to ${d.branch || "PR branch"}…`);
         break;
+      case "agent-push-blocked":
+        pipe.note("work", "Prepared locally · push needs permission");
+        break;
       case "agent-finished":
-        finishCommitTimer(d.commits ? "landed" : "no-commit");
-        pipe.complete("work", d.commits ? `Pushed ${plural(d.commits, "commit")}` : "Review complete");
-        if (d.commits) pipe.activate("trail", "Posting intent trail…");
+        finishCommitTimer(d.commits && d.published ? "landed" : "no-commit");
+        pipe.complete(
+          "work",
+          d.commits
+            ? d.published
+              ? `Pushed ${plural(d.commits, "commit")}`
+              : `Prepared ${plural(d.commits, "commit")} locally`
+            : "Review complete"
+        );
+        if (d.commits && d.published) pipe.activate("trail", "Posting intent trail…");
         else pipe.complete("trail", "No intent trail needed");
         break;
       case "comment-queued":
@@ -1653,6 +1708,17 @@
       `agent ${r.agentId || "—"}` +
       (Number.isFinite(latency) ? ` · stop → patch ${(latency / 1000).toFixed(1)}s` : "");
     box.appendChild(sub);
+    if (r.actionSummary) {
+      const actionSub = document.createElement("div");
+      actionSub.className = "sub vp-action-summary";
+      actionSub.textContent =
+        `${plural(r.actionSummary.totalActions ?? 0, "action")} · ` +
+        `${r.actionSummary.authorizedEffects ?? 0} effects authorized` +
+        (r.actionSummary.blockedEffects
+          ? ` · ${r.actionSummary.blockedEffects} ${r.actionSummary.blockedEffects === 1 ? "needs" : "need"} permission`
+          : "");
+      box.appendChild(actionSub);
+    }
     if (r.trailCommentUrl) {
       const a = document.createElement("a");
       a.className = "vp-link";

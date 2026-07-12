@@ -241,6 +241,19 @@
 .vp-menu-item:hover { background: var(--vp-subtle); }
 .vp-menu-item.on { color: var(--vp-accent); }
 .vp-menu-item.on::after { content: "✓"; margin-left: auto; color: var(--vp-accent); }
+.vp-autonomy-control {
+  display: grid; gap: 6px; padding: 8px 9px 10px;
+  border-bottom: 1px solid var(--vp-border-soft);
+  color: var(--vp-muted); font-size: 10px;
+}
+.vp-autonomy-control select {
+  width: 100%; padding: 6px 8px;
+  border: 1px solid var(--vp-border); border-radius: 7px;
+  background: var(--vp-panel); color: var(--vp-text);
+  font: 11px var(--vp-mono); cursor: pointer;
+}
+.vp-chip.scope { color: #b7c9e8; border-color: rgba(109, 162, 255, 0.25); }
+.vp-action-summary { color: var(--vp-accent); }
 
 /* ---- context strip: chips (badges) --------------------------------------- */
 .vp-context {
