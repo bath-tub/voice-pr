@@ -9,26 +9,40 @@ and commits; the bridge pushes to the PR branch.
 
 ## Pipeline
 
-```text
-Chrome extension
-  PR page loads ──► POST /api/prepare
-                    resolve + cache PR, Jira key, and CI
-                    clone/fetch mirror + prepare PR-head worktree
-                    no microphone, Cursor agent, or inference
+```mermaid
+flowchart LR
+    speech["Speech + PR-page attention"]
+    capture["Audio + anchor timeline"]
+    utterances["Anchored Utterances"]
+    plan["Validated Action Plan"]
+    envelope{"Authorization Envelope"}
+    work["Authorized edits + validation + commit"]
+    publish["Harness push + remote-head verification"]
+    landed["Commit on the PR head"]
 
-  record starts ──► POST /api/warm
-                    lease the prepared worktree
-                    create an idle Cursor SDK agent; no inference
+    pr[("GitHub PR context")]
+    history[("User-local Action history")]
+    scope["User-selected scope"]
+    receipts[("Effect receipts")]
 
-  record stops  ──► POST /api/dispatch
-                    local Whisper transcription
-                    timestamp → file:line anchoring
-                    compile commentary → validated Action Plan
-                    apply the configured authorization envelope
-                    one focused agent turn interprets + edits + tests
-                    commit + push to PR head
-                    bridge posts intent-trail comment asynchronously
+    speech --> capture
+    capture -->|"local Whisper + timestamp anchoring"| utterances
+    pr --> utterances
+    utterances -->|"single inference turn"| plan
+    history --> plan
+    plan --> envelope
+    scope --> envelope
+    envelope -->|"authorized Effects only"| work
+    work --> publish
+    publish --> landed
+
+    plan -. append Operations / Actions / Effects .-> history
+    publish -. record completed Effects .-> receipts
 ```
+
+The [end-to-end data flow](docs/data-flow.md) expands this path across the
+extension, local bridge, Cursor agent, local stores, and GitHub—including the
+page-load preparation and record-start warm paths that happen before Dispatch.
 
 There is no orchestrator, work-item queue, mayor, polecat, refinery, or direct
 LLM call. Page load prepares deterministic context, record start pays only agent

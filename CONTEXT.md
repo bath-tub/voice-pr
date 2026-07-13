@@ -52,6 +52,14 @@ _Avoid_: Utterance order, visual order
 The validated compilation output containing action changes and their proposed effects before execution.
 _Avoid_: Raw transcript, agent prompt
 
+**Dispatch Target**:
+A selected black-box inference and execution boundary that proposes an Action Plan from anchored Utterances and realises only the Effects authorised by Voice Review.
+_Avoid_: Provider, model, orchestrator, agent harness, execution destination
+
+**Dispatch Target Status**:
+The declared readiness of a Dispatch Target as either selectable and verified or visible only as a contribution placeholder.
+_Avoid_: Runtime health, model availability, permission state
+
 **Session**:
 A bounded capture and dispatch envelope that contributes utterances and operations without owning their actions.
 _Avoid_: Action, review, agent run
@@ -127,6 +135,14 @@ _Avoid_: Execution, progress
 - Execution can add necessary in-scope **Effects**, but materially broader outcomes become separate proposed actions rather than silently expanding an existing action
 - A **Finding** can refine an existing action or create a candidate action, but cannot claim requested intent or execute outside policy
 - **Compilation** produces a validated **Action Plan** before any externally visible effect can execute
+- A **Session** uses exactly one **Dispatch Target** for both **Compilation** and execution
+- A user's selected **Dispatch Target** remains active across restarts until that user changes it
+- Only a verified **Dispatch Target** is selectable; a placeholder remains visible but cannot receive a **Session**
+- Every semantic inference within a **Session** occurs inside its selected **Dispatch Target**
+- A **Dispatch Target** proposes an **Action Plan**, while Voice Review validates and authorises that plan before returning executable Effects to the same target
+- A **Dispatch Target** may use any internal provider, model, agent harness, or orchestration strategy without exposing it to Voice Review
+- If its selected **Dispatch Target** is unavailable or cannot complete Compilation, a **Session** fails without routing inference to another target
+- A headless Voice Review process without a valid selected **Dispatch Target** fails before a **Session** begins
 - Cancelling an unresolved **Action** prevents future effects, while undoing applied effects creates a **Compensating Action** under the normal authorisation and verification rules
 - A transcription boundary does not establish an **Action** boundary
 
@@ -150,3 +166,4 @@ _Avoid_: Execution, progress
 - The Action Tape risked replacing specificity tax with action-management tax — resolved: the normal path remains Record to Dispatch to result, and detailed **Actions** surface by exception or request.
 - Fixed Action slots risked splitting one outcome by tool or delivery mechanism — resolved: **Actions** are open-ended outcomes and code edits, comments, issues, assignments, and notifications are **Effects**.
 - Agent-discovered scope risked being attributed to the user — resolved: agent discoveries are **Findings** and any new work starts as a candidate action.
+- “provider,” “orchestrator,” “agent harness,” and “execution destination” risked leaking target internals into Voice Review — resolved: Voice Review selects a **Dispatch Target** and treats its implementation as opaque.
